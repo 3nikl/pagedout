@@ -1,0 +1,94 @@
+version: "3.9"
+
+services:
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: pagedout-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    networks:
+      - pagedout-network
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: pagedout-kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    networks:
+      - pagedout-network
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: pagedout-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - pagedout-network
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: pagedout-postgres
+    environment:
+      POSTGRES_DB: pagedout
+      POSTGRES_USER: pagedout
+      POSTGRES_PASSWORD: pagedout123
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - pagedout-network
+
+  redis:
+    image: redis:7.2-alpine
+    container_name: pagedout-redis
+    ports:
+      - "6379:6379"
+    networks:
+      - pagedout-network
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: pagedout-api
+    depends_on:
+      - kafka
+      - qdrant
+      - postgres
+      - redis
+    ports:
+      - "8000:8000"
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: 6333
+      POSTGRES_URL: postgresql://pagedout:pagedout123@postgres:5432/pagedout
+      REDIS_URL: redis://redis:6379
+    volumes:
+      - .:/app
+    networks:
+      - pagedout-network
+
+volumes:
+  qdrant_data:
+  postgres_data:
+
+networks:
+  pagedout-network:
+    driver: bridge

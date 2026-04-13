@@ -1,0 +1,54 @@
+# PagedOut - Requirements
+# Python 3.11+
+
+# LLM and Agent Layer
+langchain==0.2.16
+langchain-openai==0.1.23
+langchain-community==0.2.16
+langgraph==0.2.28
+langsmith==0.1.120
+
+# Vector Database
+qdrant-client==1.11.1
+
+# Streaming Pipeline
+kafka-python==2.0.2
+
+# Fine-tuning
+transformers==4.44.2
+peft==0.12.0
+trl==0.11.1
+bitsandbytes==0.44.1
+datasets==3.0.1
+accelerate==0.34.2
+
+# Evaluation
+ragas==0.1.21
+
+# Observability
+arize-phoenix==4.29.0
+mlflow==2.16.2
+opentelemetry-api==1.27.0
+opentelemetry-sdk==1.27.0
+
+# Backend
+fastapi==0.115.0
+uvicorn==0.30.6
+pydantic==2.9.2
+celery==5.4.0
+
+# Database
+psycopg2-binary==2.9.9
+pgvector==0.3.2
+sqlalchemy==2.0.35
+redis==5.1.0
+
+# Guardrails
+guardrails-ai==0.5.10
+
+# Utils
+python-dotenv==1.0.1
+httpx==0.27.2
+numpy==1.26.4
+pandas==2.2.3
+tqdm==4.66.5

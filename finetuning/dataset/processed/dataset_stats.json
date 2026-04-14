@@ -1,0 +1,27 @@
+{
+  "total_examples": 128,
+  "train_examples": 102,
+  "test_examples": 26,
+  "train_split": 0.8,
+  "incident_type_distribution": {
+    "network_partition": 12,
+    "unknown": 38,
+    "disk_space_critical": 3,
+    "deployment_failure": 32,
+    "memory_leak": 14,
+    "high_latency_spike": 21,
+    "cascade_failure": 5,
+    "cpu_throttling": 2,
+    "database_connection_exhaustion": 1
+  },
+  "severity_distribution": {
+    "P1": 115,
+    "P3": 9,
+    "P2": 4
+  },
+  "source_distribution": {
+    "danluu/post-mortems": 128
+  },
+  "avg_input_length": 1410,
+  "avg_output_length": 1247
+}

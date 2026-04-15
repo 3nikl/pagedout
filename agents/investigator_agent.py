@@ -1,25 +1,21 @@
 """
 PagedOut - Investigator Agent
-Investigates the incident using tool calls.
-Queries metrics, logs, and deployment history.
-Uses ReAct pattern - reasons then acts then observes.
+Investigates the incident by calling tools directly.
+Uses phi3:mini only for final root cause summary.
+No tool calling via LLM - avoids phi3:mini limitation.
 """
 
 import json
 import random
 from datetime import datetime
 from langchain_ollama import ChatOllama
-from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_core.tools import tool
+from langchain_core.messages import HumanMessage
 
 
-# ── TOOLS (simulated for now - replace with real APIs later) ──────────────────
+# ── TOOL FUNCTIONS (called directly, not via LLM) ─────────────────────────────
 
-@tool
 def query_prometheus(service: str, metric: str) -> str:
-    """Query Prometheus for current metric value for a service.
-    Use this to get live metrics like error_rate, db_connections, latency_p99, memory_usage, cpu_usage."""
-    # Simulated metrics - replace with real Prometheus API call later
+    """Query Prometheus for current metric value."""
     metrics = {
         "error_rate": round(random.uniform(0.3, 0.9), 2),
         "db_connections": random.randint(85, 100),
@@ -27,65 +23,50 @@ def query_prometheus(service: str, metric: str) -> str:
         "memory_usage": random.randint(80, 99),
         "cpu_usage": random.randint(70, 95),
     }
-    value = metrics.get(metric, random.uniform(0, 100))
-    return f"{service} {metric}: {value} (queried at {datetime.now().strftime('%H:%M:%S')})"
+    value = metrics.get(metric, round(random.uniform(0, 100), 2))
+    return f"{service} {metric}={value} at {datetime.now().strftime('%H:%M:%S')}"
 
 
-@tool
-def query_recent_logs(service: str, minutes: int = 5) -> str:
-    """Query recent error logs for a service.
-    Use this to find error patterns and when they started."""
-    # Simulated logs - replace with real Elasticsearch/log API later
-    log_patterns = {
-        "database_connection_exhaustion": [
-            f"ERROR: Connection pool exhausted 99/100 on {service}",
-            f"WARN: DB connection wait time 4500ms on {service}",
-            f"ERROR: Unable to acquire connection after timeout on {service}",
-        ],
-        "memory_leak": [
-            f"WARN: Heap usage at 94% on {service}",
-            f"ERROR: GC overhead limit exceeded on {service}",
-            f"WARN: Memory growing 50MB/min on {service}",
-        ],
-        "high_latency_spike": [
-            f"WARN: p99 latency 6500ms exceeds SLA 500ms on {service}",
-            f"ERROR: Request timeout after 30s on {service}",
-            f"WARN: Circuit breaker open on {service}",
-        ],
-    }
-    # Return generic error logs
-    logs = [
-        f"ERROR: Anomaly detected on {service} at {datetime.now().strftime('%H:%M:%S')}",
-        f"WARN: Error rate elevated on {service}",
-        f"INFO: Health check failing on {service}",
-    ]
-    return f"Recent logs for {service} (last {minutes} mins):\n" + "\n".join(logs)
+def query_recent_logs(service: str) -> str:
+    """Query recent error logs for a service."""
+    return f"""Recent logs for {service}:
+ERROR: Anomaly detected at {datetime.now().strftime('%H:%M:%S')}
+WARN: Error rate elevated above threshold
+INFO: Health check failing on port 8080"""
 
 
-@tool
 def check_recent_deployments(service: str) -> str:
-    """Check recent deployments for a service in the last hour.
-    Use this to correlate incidents with deployment timing."""
-    # Simulated deployment history - replace with real GitHub/ArgoCD API later
-    return f"""Recent deployments for {service}:
-- v2.3.1 deployed 4 minutes ago by engineer@company.com
-  Changed: connection pool config, timeout settings
-- v2.3.0 deployed 2 days ago
-  Changed: database query optimization"""
+    """Check recent deployments."""
+    return f"""Deployments for {service}:
+- v2.3.1 deployed 4 minutes ago (connection pool config changed)
+- v2.3.0 deployed 2 days ago (stable)"""
 
 
-@tool
 def get_service_dependencies(service: str) -> str:
-    """Get the downstream dependencies of a service.
-    Use this to understand blast radius and cascade failures."""
+    """Get service dependencies."""
     deps = {
         "payment-service": ["postgres", "redis", "auth-service"],
-        "order-service": ["payment-service", "inventory-service", "postgres"],
+        "order-service": ["payment-service", "inventory-service"],
         "auth-service": ["redis", "postgres"],
-        "api-gateway": ["auth-service", "order-service", "payment-service"],
     }
     service_deps = deps.get(service, ["postgres", "redis"])
     return f"{service} depends on: {', '.join(service_deps)}"
+
+
+# ── METRIC MAPPING per incident type ─────────────────────────────────────────
+
+INCIDENT_METRICS = {
+    "database_connection_exhaustion": "db_connections",
+    "memory_leak": "memory_usage",
+    "high_latency_spike": "latency_p99",
+    "cpu_throttling": "cpu_usage",
+    "pod_crash_loop": "error_rate",
+    "disk_space_critical": "error_rate",
+    "network_partition": "error_rate",
+    "deployment_failure": "error_rate",
+    "cascade_failure": "error_rate",
+    "unknown": "error_rate",
+}
 
 
 # ── INVESTIGATOR AGENT ────────────────────────────────────────────────────────
@@ -96,91 +77,49 @@ def investigator_agent(state: dict) -> dict:
     print("="*50)
     print(f"Investigating: {state['incident_type']} on {state['service']}")
 
-    llm = ChatOllama(model="phi3:mini", temperature=0)
-    tools = [query_prometheus, query_recent_logs, check_recent_deployments, get_service_dependencies]
-    llm_with_tools = llm.bind_tools(tools)
-
-    system_prompt = """You are an expert SRE investigator. Your job is to gather evidence about an incident.
-
-You have these tools:
-- query_prometheus: get live metrics (error_rate, db_connections, latency_p99, memory_usage, cpu_usage)
-- query_recent_logs: get recent error logs
-- check_recent_deployments: check if a recent deployment caused the incident
-- get_service_dependencies: understand which services are affected
-
-Steps:
-1. Query the most relevant metric for this incident type
-2. Check recent logs
-3. Check if a recent deployment correlates with the incident
-4. Conclude with root cause
-
-After investigation respond with:
-ROOT CAUSE: <one sentence>
-EVIDENCE: <what you found>"""
-
-    user_message = f"""Investigate this incident:
-Incident Type: {state['incident_type']}
-Service: {state['service']}
-Severity: {state['severity']}
-Initial logs: {state.get('raw_logs', [])[:2]}
-Initial metrics: {state.get('raw_metrics', {})}
-
-Use your tools to investigate. Start with the most relevant metric."""
-
-    messages = [
-        SystemMessage(content=system_prompt),
-        HumanMessage(content=user_message)
-    ]
-
+    service = state['service']
+    incident_type = state.get('incident_type', 'unknown')
     evidence = list(state.get('evidence_chain', []))
-    root_cause = "Under investigation"
 
-    # ReAct loop - agent reasons and calls tools
-    max_iterations = 4
-    for i in range(max_iterations):
-        response = llm_with_tools.invoke(messages)
-        messages.append(response)
+    # Step 1 — Query most relevant metric
+    metric = INCIDENT_METRICS.get(incident_type, "error_rate")
+    print(f"\n   🔧 Querying Prometheus: {metric}")
+    prometheus_result = query_prometheus(service, metric)
+    print(f"   📊 {prometheus_result}")
+    evidence.append(f"[INVESTIGATOR] Prometheus: {prometheus_result}")
 
-        # Check if agent wants to call tools
-        if hasattr(response, 'tool_calls') and response.tool_calls:
-            for tool_call in response.tool_calls:
-                tool_name = tool_call['name']
-                tool_args = tool_call['args']
+    # Step 2 — Query recent logs
+    print(f"\n   🔧 Querying recent logs...")
+    log_result = query_recent_logs(service)
+    print(f"   📊 {log_result[:80]}...")
+    evidence.append(f"[INVESTIGATOR] Logs: {log_result[:150]}")
 
-                print(f"\n   🔧 Tool call: {tool_name}({tool_args})")
+    # Step 3 — Check deployments
+    print(f"\n   🔧 Checking recent deployments...")
+    deploy_result = check_recent_deployments(service)
+    print(f"   📊 {deploy_result[:80]}...")
+    evidence.append(f"[INVESTIGATOR] Deployments: {deploy_result[:150]}")
 
-                # Execute the tool
-                tool_result = None
-                for t in tools:
-                    if t.name == tool_name:
-                        try:
-                            tool_result = t.invoke(tool_args)
-                        except Exception as e:
-                            tool_result = f"Tool error: {e}"
-                        break
+    # Step 4 — Check dependencies
+    print(f"\n   🔧 Checking service dependencies...")
+    deps_result = get_service_dependencies(service)
+    print(f"   📊 {deps_result}")
+    evidence.append(f"[INVESTIGATOR] Dependencies: {deps_result}")
 
-                if tool_result:
-                    print(f"   📊 Result: {str(tool_result)[:100]}...")
-                    evidence.append(f"[INVESTIGATOR] {tool_name}: {str(tool_result)[:150]}")
+    # Step 5 — Use phi3:mini to summarize root cause
+    print(f"\n   🧠 Summarizing root cause with phi3:mini...")
+    llm = ChatOllama(model="phi3:mini", temperature=0)
 
-                    # Add tool result to messages
-                    from langchain_core.messages import ToolMessage
-                    messages.append(ToolMessage(
-                        content=str(tool_result),
-                        tool_call_id=tool_call.get('id', f'tool_{i}')
-                    ))
-        else:
-            # Agent finished investigating
-            content = response.content
-            if "ROOT CAUSE:" in content:
-                lines = content.split('\n')
-                for line in lines:
-                    if "ROOT CAUSE:" in line:
-                        root_cause = line.replace("ROOT CAUSE:", "").strip()
-                        break
-            else:
-                root_cause = content[:200] if content else "Root cause under investigation"
-            break
+    evidence_text = "\n".join(evidence)
+    prompt = f"""Based on this evidence, what is the root cause of this incident?
+Incident: {incident_type} on {service}
+Evidence:
+{evidence_text}
+
+Respond in ONE sentence starting with: "Root cause is..."
+"""
+    response = llm.invoke([HumanMessage(content=prompt)])
+    root_cause = response.content.strip()[:200]
 
     print(f"\n✅ Investigation Complete:")
     print(f"   Root Cause: {root_cause}")

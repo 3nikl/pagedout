@@ -1,113 +1,92 @@
 """
-PagedOut - Runbook RAG Agent
-Finds the right runbook for the incident.
-For now uses a local runbook dictionary.
-Later replaced with Qdrant hybrid search.
+PagedOut - Runbook RAG Agent (Phase 5)
+Real Qdrant vector search replacing dictionary lookup.
 """
 
-from langchain_ollama import ChatOllama
-from langchain_core.messages import HumanMessage, SystemMessage
+from qdrant_client import QdrantClient
+from sentence_transformers import SentenceTransformer
+
+QDRANT_HOST = "localhost"
+QDRANT_PORT = 6333
+COLLECTION_NAME = "runbooks"
+EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+TOP_K = 3
+
+print("Loading RAG components...")
+_model = SentenceTransformer(EMBEDDING_MODEL)
+_client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
+print("RAG ready.")
 
 
-# ── LOCAL RUNBOOK KNOWLEDGE BASE (replaced by Qdrant in Phase 5) ─────────────
+def search_runbooks(query: str, incident_type: str = None, top_k: int = TOP_K):
+    vector = _model.encode(query).tolist()
 
-RUNBOOKS = {
-    "database_connection_exhaustion": {
-        "title": "DB Connection Pool Recovery",
-        "steps": [
-            "SAFE: Restart connection pool manager",
-            "SAFE: Clear idle connections older than 30 seconds",
-            "SAFE: Scale up connection pool size temporarily",
-            "RISKY: Rollback recent deployment if correlation found",
-            "RISKY: Restart database if pool restart fails",
-        ]
-    },
-    "memory_leak": {
-        "title": "Memory Leak Response",
-        "steps": [
-            "SAFE: Restart affected pods to clear memory",
-            "SAFE: Scale up replica count to distribute load",
-            "RISKY: Enable heap dump for analysis",
-            "RISKY: Rollback deployment if memory grew after deploy",
-        ]
-    },
-    "high_latency_spike": {
-        "title": "High Latency Response",
-        "steps": [
-            "SAFE: Check downstream service health",
-            "SAFE: Clear cache if stale data suspected",
-            "SAFE: Scale up replicas to reduce per-instance load",
-            "RISKY: Enable circuit breaker to protect upstream",
-            "RISKY: Rollback if latency started after deployment",
-        ]
-    },
-    "pod_crash_loop": {
-        "title": "Pod CrashLoopBackOff Recovery",
-        "steps": [
-            "SAFE: Check pod logs for crash reason",
-            "SAFE: Delete and recreate crashing pod",
-            "SAFE: Increase memory limits if OOMKilled",
-            "RISKY: Rollback deployment causing crashes",
-        ]
-    },
-    "disk_space_critical": {
-        "title": "Disk Space Recovery",
-        "steps": [
-            "SAFE: Clear old log files older than 7 days",
-            "SAFE: Clear Docker unused images and volumes",
-            "SAFE: Archive old database partitions",
-            "RISKY: Expand disk volume",
-        ]
-    },
-    "network_partition": {
-        "title": "Network Partition Response",
-        "steps": [
-            "SAFE: Verify network connectivity between services",
-            "SAFE: Check DNS resolution",
-            "SAFE: Restart network proxy/sidecar",
-            "RISKY: Failover to backup region",
-        ]
-    },
-    "cpu_throttling": {
-        "title": "CPU Throttling Response",
-        "steps": [
-            "SAFE: Scale up replica count",
-            "SAFE: Increase CPU limits",
-            "SAFE: Check for runaway processes",
-            "RISKY: Rollback if throttling started after deployment",
-        ]
-    },
-    "deployment_failure": {
-        "title": "Deployment Failure Response",
-        "steps": [
-            "SAFE: Check deployment logs",
-            "SAFE: Verify new pods are healthy",
-            "RISKY: Rollback to previous version",
-            "RISKY: Scale down failed deployment",
-        ]
-    },
-    "unknown": {
-        "title": "General Incident Response",
-        "steps": [
-            "SAFE: Gather logs and metrics",
-            "SAFE: Check recent deployments",
-            "RISKY: Escalate to senior engineer",
-        ]
-    }
-}
+    search_filter = None
+    if incident_type and incident_type != "unknown":
+        from qdrant_client.models import Filter, FieldCondition, MatchValue
+        search_filter = Filter(
+            must=[FieldCondition(
+                key="incident_type",
+                match=MatchValue(value=incident_type)
+            )]
+        )
+
+    results = _client.query_points(
+        collection_name=COLLECTION_NAME,
+        query=vector,
+        query_filter=search_filter,
+        limit=top_k,
+        with_payload=True
+    )
+    return results.points
 
 
 def runbook_rag_agent(state: dict) -> dict:
     print("\n" + "="*50)
-    print("📚 RUNBOOK RAG AGENT")
+    print("📚 RUNBOOK RAG AGENT (Qdrant Vector Search)")
     print("="*50)
-    print(f"Searching runbooks for: {state['incident_type']}")
 
     incident_type = state.get('incident_type', 'unknown')
-    runbook = RUNBOOKS.get(incident_type, RUNBOOKS['unknown'])
+    service = state.get('service', '')
+    root_cause = state.get('root_cause', '')
+    evidence = state.get('evidence_chain', [])
 
-    print(f"\n✅ Runbook Found: {runbook['title']}")
-    print(f"   Steps: {len(runbook['steps'])}")
+    query = f"{incident_type} {service} {root_cause}"
+    print(f"Query: '{query[:80]}'")
+    print(f"Searching {COLLECTION_NAME} collection...")
+
+    # Search with type filter first
+    results = search_runbooks(query, incident_type=incident_type, top_k=TOP_K)
+
+    # Fallback — search without filter
+    if not results:
+        print("No results with filter, searching all runbooks...")
+        results = search_runbooks(query, top_k=TOP_K)
+
+    if not results:
+        return {
+            **state,
+            "matched_runbook": "General Incident Response",
+            "remediation_steps": [
+                "SAFE: Gather logs and metrics",
+                "SAFE: Check recent deployments",
+                "RISKY: Escalate to senior engineer",
+            ],
+            "evidence_chain": evidence + ["[RUNBOOK] No matching runbook found."]
+        }
+
+    top = results[0]
+    runbook = top.payload
+    score = top.score
+
+    print(f"\n✅ Top Match:")
+    print(f"   Title: {runbook['title']}")
+    print(f"   Similarity: {score:.3f}")
+    print(f"\n   All matches:")
+    for i, r in enumerate(results):
+        print(f"   {i+1}. {r.payload['title']} (score: {r.score:.3f})")
+
+    print(f"\n   Steps:")
     for step in runbook['steps']:
         print(f"   - {step}")
 
@@ -115,7 +94,8 @@ def runbook_rag_agent(state: dict) -> dict:
         **state,
         "matched_runbook": runbook['title'],
         "remediation_steps": runbook['steps'],
-        "evidence_chain": state.get('evidence_chain', []) + [
-            f"[RUNBOOK] Found: {runbook['title']} with {len(runbook['steps'])} steps"
+        "evidence_chain": evidence + [
+            f"[RUNBOOK] Found: '{runbook['title']}' similarity={score:.3f}",
+            f"[RUNBOOK] Prevention: {runbook.get('prevention', 'N/A')[:100]}"
         ]
     }

@@ -1,275 +1,390 @@
 """
-PagedOut - Synthetic Log and Metrics Generator
-Generates realistic microservice incident telemetry for testing the agent pipeline.
+PagedOut synthetic telemetry generator.
+
+Produces correlated incident signals across three Kafka topics. A single
+"incident" fans out into many log lines, a metric sample and an alert, all
+sharing a service and incident_type — which is exactly the fan-out the Flink
+correlation job has to collapse back into one incident.
+
+Uses confluent-kafka (librdkafka) rather than kafka-python. At the rates the
+load harness drives, a pure-Python producer becomes the bottleneck and the
+benchmark ends up measuring the generator instead of the pipeline.
+
+Usage:
+    python pipeline/log_generator.py                      # 50 events/sec, forever
+    python pipeline/log_generator.py --rate 2000 --duration 30
+    python pipeline/log_generator.py --rate 500 --services 4
 """
 
+from __future__ import annotations
+
+import argparse
 import json
 import random
+import signal
 import time
 import uuid
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from enum import Enum
-from typing import Optional
-from dataclasses import dataclass, asdict
 
-from kafka import KafkaProducer
+from confluent_kafka import Producer
 
+# ── Config ────────────────────────────────────────────────────────────────────
 
-# ── Config ──────────────────────────────────────────────────────────────────
+BOOTSTRAP = "localhost:9092"
 
-KAFKA_BOOTSTRAP_SERVERS = "localhost:9092"
 TOPIC_LOGS = "logs.raw"
 TOPIC_METRICS = "metrics.raw"
 TOPIC_ALERTS = "alerts.raw"
 
+# These match the victim app's service names so the generator and the live
+# app describe the same world.
 SERVICES = [
+    "checkout-service",
     "payment-service",
+    "ledger-service",
     "auth-service",
     "order-service",
     "inventory-service",
     "notification-service",
-    "user-service",
     "search-service",
-    "recommendation-service",
     "billing-service",
     "api-gateway",
 ]
 
 
-# ── Severity ─────────────────────────────────────────────────────────────────
+def iso_now() -> str:
+    """ISO-8601 with milliseconds and a literal Z.
 
-class Severity(str, Enum):
-    P1 = "P1"  # Critical — immediate action required
-    P2 = "P2"  # High — action required within 30 mins
-    P3 = "P3"  # Medium — action required within 2 hours
+    Flink's `json.timestamp-format.standard = ISO-8601` parser wants exactly
+    this shape. Python's default isoformat() emits microseconds and a
+    +00:00 offset, which Flink rejects.
+    """
+    return (
+        datetime.now(timezone.utc)
+        .isoformat(timespec="milliseconds")
+        .replace("+00:00", "Z")
+    )
 
 
-# ── Incident Templates ────────────────────────────────────────────────────────
+# ── Incident templates ────────────────────────────────────────────────────────
 
-INCIDENT_TEMPLATES = [
-    {
-        "type": "database_connection_exhaustion",
-        "severity": Severity.P1,
-        "log_messages": [
+
+@dataclass(frozen=True)
+class IncidentTemplate:
+    type: str
+    severity: str
+    log_messages: tuple[str, ...]
+    metrics: dict[str, tuple[float, float]] = field(default_factory=dict)
+    runbook_hint: str = ""
+
+
+TEMPLATES: tuple[IncidentTemplate, ...] = (
+    IncidentTemplate(
+        type="database_connection_exhaustion",
+        severity="P1",
+        log_messages=(
             "FATAL: Connection pool exhausted. Active connections: {value}/100",
             "ERROR: Unable to acquire database connection after 30s timeout",
             "WARN: Connection wait time exceeding threshold: {value}ms",
-        ],
-        "metrics": {"db_connections": (95, 100), "error_rate": (0.3, 0.9), "latency_p99": (2000, 8000)},
-    },
-    {
-        "type": "memory_leak",
-        "severity": Severity.P2,
-        "log_messages": [
+            "ERROR: HikariPool-1 - Connection is not available, request timed out",
+        ),
+        metrics={
+            "db_connections": (95, 100),
+            "error_rate": (0.3, 0.9),
+            "latency_p99": (2000, 8000),
+        },
+        runbook_hint="connection pool",
+    ),
+    IncidentTemplate(
+        type="memory_leak",
+        severity="P2",
+        log_messages=(
             "WARN: Heap usage at {value}% - approaching OOM threshold",
             "ERROR: GC overhead limit exceeded",
             "INFO: Full GC triggered, pause time: {value}ms",
-        ],
-        "metrics": {"memory_usage": (85, 99), "gc_pause_ms": (500, 3000), "request_rate": (0.4, 0.7)},
-    },
-    {
-        "type": "high_latency_spike",
-        "severity": Severity.P2,
-        "log_messages": [
-            "WARN: Request latency p99 exceeds SLA: {value}ms (threshold: 500ms)",
-            "ERROR: Downstream service timeout after {value}ms",
-            "WARN: Circuit breaker half-open, retry count: {value}",
-        ],
-        "metrics": {"latency_p99": (1000, 5000), "timeout_rate": (0.1, 0.4), "error_rate": (0.05, 0.2)},
-    },
-    {
-        "type": "pod_crash_loop",
-        "severity": Severity.P1,
-        "log_messages": [
-            "FATAL: Pod {pod} entered CrashLoopBackOff state",
-            "ERROR: Container exited with code 137 (OOMKilled)",
-            "WARN: Restart count: {value} in last 10 minutes",
-        ],
-        "metrics": {"pod_restarts": (5, 20), "availability": (0.3, 0.7), "error_rate": (0.5, 0.95)},
-    },
-    {
-        "type": "disk_space_critical",
-        "severity": Severity.P1,
-        "log_messages": [
-            "FATAL: Disk usage at {value}% on /var/log — write operations failing",
+            "ERROR: java.lang.OutOfMemoryError: Java heap space",
+        ),
+        metrics={
+            "memory_usage": (85, 99),
+            "gc_pause_ms": (500, 3000),
+            "error_rate": (0.05, 0.4),
+        },
+        runbook_hint="heap memory",
+    ),
+    IncidentTemplate(
+        type="high_latency_spike",
+        severity="P2",
+        log_messages=(
+            "WARN: Request latency p99 at {value}ms, SLA is 500ms",
+            "ERROR: Upstream timeout after {value}ms",
+            "WARN: Thread pool saturated, queue depth {value}",
+        ),
+        metrics={
+            "latency_p99": (1000, 5000),
+            "timeout_rate": (0.1, 0.4),
+            "error_rate": (0.05, 0.2),
+        },
+        runbook_hint="latency",
+    ),
+    IncidentTemplate(
+        type="pod_crash_loop",
+        severity="P1",
+        log_messages=(
+            "ERROR: Back-off restarting failed container, restart count {value}",
+            "FATAL: Liveness probe failed: HTTP 500",
+            "ERROR: Container terminated with exit code 137 (OOMKilled)",
+        ),
+        metrics={
+            "pod_restarts": (5, 20),
+            "availability": (0.3, 0.7),
+            "error_rate": (0.5, 0.95),
+        },
+        runbook_hint="crash loop",
+    ),
+    IncidentTemplate(
+        type="disk_space_critical",
+        severity="P1",
+        log_messages=(
             "ERROR: No space left on device",
             "WARN: Log rotation failed, disk at {value}%",
-        ],
-        "metrics": {"disk_usage": (92, 99), "write_errors": (10, 100), "iops": (0.1, 0.3)},
-    },
-    {
-        "type": "network_partition",
-        "severity": Severity.P2,
-        "log_messages": [
-            "ERROR: Failed to connect to {service}: Connection refused",
-            "WARN: Service discovery returning stale endpoints for {service}",
-            "ERROR: gRPC stream disconnected, reconnecting... attempt {value}",
-        ],
-        "metrics": {"network_errors": (50, 200), "packet_loss": (0.1, 0.4), "latency_p99": (800, 3000)},
-    },
-    {
-        "type": "cpu_throttling",
-        "severity": Severity.P3,
-        "log_messages": [
-            "WARN: CPU throttling detected, throttled time: {value}%",
-            "INFO: Thread pool queue depth: {value} — consider scaling",
-            "WARN: Request processing time degraded by {value}%",
-        ],
-        "metrics": {"cpu_throttle_pct": (30, 80), "thread_queue_depth": (50, 200), "latency_p95": (400, 1200)},
-    },
-]
-
-
-# ── Data Classes ──────────────────────────────────────────────────────────────
-
-@dataclass
-class LogEvent:
-    event_id: str
-    timestamp: str
-    service: str
-    incident_type: str
-    severity: str
-    message: str
-    pod: str
-    namespace: str = "production"
-
-
-@dataclass
-class MetricEvent:
-    event_id: str
-    timestamp: str
-    service: str
-    incident_type: str
-    severity: str
-    metrics: dict
-
-
-@dataclass
-class AlertEvent:
-    event_id: str
-    timestamp: str
-    service: str
-    incident_type: str
-    severity: str
-    title: str
-    description: str
-    runbook_hint: str
+            "FATAL: Cannot write WAL segment, filesystem full",
+        ),
+        metrics={
+            "disk_usage": (92, 99),
+            "write_errors": (10, 100),
+            "iops": (0.1, 0.3),
+        },
+        runbook_hint="disk space",
+    ),
+    IncidentTemplate(
+        type="network_partition",
+        severity="P2",
+        log_messages=(
+            "ERROR: Failed to connect to peer: Connection refused",
+            "WARN: Service discovery returning stale endpoints",
+            "ERROR: gRPC stream disconnected, reconnecting attempt {value}",
+        ),
+        metrics={
+            "network_errors": (50, 200),
+            "packet_loss": (0.1, 0.4),
+            "latency_p99": (800, 3000),
+        },
+        runbook_hint="network",
+    ),
+    IncidentTemplate(
+        type="cpu_throttling",
+        severity="P3",
+        log_messages=(
+            "WARN: CPU throttling detected, throttled time {value}%",
+            "INFO: Thread pool queue depth {value}, consider scaling",
+            "WARN: Request processing degraded by {value}%",
+        ),
+        metrics={
+            "cpu_throttle_pct": (30, 80),
+            "thread_queue_depth": (50, 200),
+            "latency_p95": (400, 1200),
+        },
+        runbook_hint="cpu throttling",
+    ),
+    IncidentTemplate(
+        type="deployment_failure",
+        severity="P1",
+        log_messages=(
+            "ERROR: NullPointerException in OrderValidator after deploy",
+            "ERROR: Readiness probe failing for new ReplicaSet",
+            "WARN: Error rate jumped {value}% following release",
+        ),
+        metrics={
+            "error_rate": (0.4, 0.95),
+            "rollout_progress": (0.1, 0.6),
+            "latency_p99": (1500, 6000),
+        },
+        runbook_hint="bad deploy",
+    ),
+)
 
 
 # ── Generator ─────────────────────────────────────────────────────────────────
 
+
 class IncidentGenerator:
-    def __init__(self):
-        self.producer = KafkaProducer(
-            bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
-            value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-            key_serializer=lambda k: k.encode("utf-8"),
+    """Emits bursts of correlated signals.
+
+    One call to `emit_incident` produces `fanout` log events, one metric
+    event and one alert event, all tagged with the same service and
+    incident_type. The Flink job should turn that entire burst into a single
+    correlated incident.
+    """
+
+    def __init__(self, bootstrap: str = BOOTSTRAP, services: int = len(SERVICES)):
+        self.producer = Producer(
+            {
+                "bootstrap.servers": bootstrap,
+                "linger.ms": 5,
+                "batch.size": 262144,
+                "compression.type": "lz4",
+                "acks": 1,
+                "queue.buffering.max.messages": 1_000_000,
+                "queue.buffering.max.kbytes": 512_000,
+            }
         )
-        print(f"Connected to Kafka at {KAFKA_BOOTSTRAP_SERVERS}")
+        self.services = SERVICES[:services]
+        self.sent = 0
 
-    def _random_value(self, metric_range: tuple) -> float:
-        lo, hi = metric_range
-        return round(random.uniform(lo, hi), 2)
+    def _send(self, topic: str, key: str, payload: dict) -> None:
+        payload["emitted_at_ms"] = int(time.time() * 1000)
+        while True:
+            try:
+                self.producer.produce(
+                    topic, key=key, value=json.dumps(payload).encode()
+                )
+                break
+            except BufferError:
+                # Local queue is full; let librdkafka drain before retrying.
+                self.producer.poll(0.1)
+        self.sent += 1
 
-    def _generate_incident(self) -> dict:
-        template = random.choice(INCIDENT_TEMPLATES)
-        service = random.choice(SERVICES)
-        event_id = str(uuid.uuid4())
-        timestamp = datetime.now(timezone.utc).isoformat()
+    def emit_incident(self, fanout: int = 4) -> int:
+        """Emit one correlated burst. Returns the number of events produced."""
+        tpl = random.choice(TEMPLATES)
+        service = random.choice(self.services)
+        ts = iso_now()
         pod = f"{service}-{uuid.uuid4().hex[:8]}"
 
-        # Build log message
-        msg_template = random.choice(template["log_messages"])
-        message = msg_template.format(
-            value=self._random_value((1, 9999)),
-            service=random.choice(SERVICES),
-            pod=pod,
+        for _ in range(fanout):
+            template = random.choice(tpl.log_messages)
+            message = template.replace("{value}", str(random.randint(50, 9000)))
+            self._send(
+                TOPIC_LOGS,
+                service,
+                {
+                    "event_id": str(uuid.uuid4()),
+                    "timestamp": ts,
+                    "service": service,
+                    "incident_type": tpl.type,
+                    "severity": tpl.severity,
+                    "message": message,
+                    "pod": pod,
+                    "namespace": "production",
+                },
+            )
+
+        self._send(
+            TOPIC_METRICS,
+            service,
+            {
+                "event_id": str(uuid.uuid4()),
+                "timestamp": ts,
+                "service": service,
+                "incident_type": tpl.type,
+                "severity": tpl.severity,
+                "metrics": {
+                    name: round(random.uniform(lo, hi), 3)
+                    for name, (lo, hi) in tpl.metrics.items()
+                },
+            },
         )
 
-        # Build metrics
-        metrics = {
-            k: self._random_value(v)
-            for k, v in template["metrics"].items()
-        }
-
-        return {
-            "event_id": event_id,
-            "timestamp": timestamp,
-            "service": service,
-            "incident_type": template["type"],
-            "severity": template["severity"].value,
-            "message": message,
-            "pod": pod,
-            "metrics": metrics,
-        }
-
-    def emit_log(self, incident: dict):
-        log = LogEvent(
-            event_id=incident["event_id"],
-            timestamp=incident["timestamp"],
-            service=incident["service"],
-            incident_type=incident["incident_type"],
-            severity=incident["severity"],
-            message=incident["message"],
-            pod=incident["pod"],
+        self._send(
+            TOPIC_ALERTS,
+            service,
+            {
+                "event_id": str(uuid.uuid4()),
+                "timestamp": ts,
+                "service": service,
+                "incident_type": tpl.type,
+                "severity": tpl.severity,
+                "title": f"[{tpl.severity}] {tpl.type} - {service}",
+                "description": f"Detected {tpl.type.replace('_', ' ')} on {service}",
+                "runbook_hint": tpl.runbook_hint,
+            },
         )
-        self.producer.send(TOPIC_LOGS, key=incident["service"], value=asdict(log))
 
-    def emit_metric(self, incident: dict):
-        metric = MetricEvent(
-            event_id=incident["event_id"],
-            timestamp=incident["timestamp"],
-            service=incident["service"],
-            incident_type=incident["incident_type"],
-            severity=incident["severity"],
-            metrics=incident["metrics"],
-        )
-        self.producer.send(TOPIC_METRICS, key=incident["service"], value=asdict(metric))
+        return fanout + 2
 
-    def emit_alert(self, incident: dict):
-        alert = AlertEvent(
-            event_id=incident["event_id"],
-            timestamp=incident["timestamp"],
-            service=incident["service"],
-            incident_type=incident["incident_type"],
-            severity=incident["severity"],
-            title=f"[{incident['severity']}] {incident['incident_type'].replace('_', ' ').title()} - {incident['service']}",
-            description=incident["message"],
-            runbook_hint=f"runbook/{incident['incident_type']}",
-        )
-        self.producer.send(TOPIC_ALERTS, key=incident["service"], value=asdict(alert))
+    def poll(self, timeout: float = 0.0) -> None:
+        self.producer.poll(timeout)
 
-    def run(self, interval_seconds: float = 2.0, max_events: Optional[int] = None):
-        print(f"Generating incidents every {interval_seconds}s...")
-        count = 0
-        try:
-            while True:
-                incident = self._generate_incident()
-                self.emit_log(incident)
-                self.emit_metric(incident)
-
-                # Only emit alert for P1 and P2
-                if incident["severity"] in (Severity.P1.value, Severity.P2.value):
-                    self.emit_alert(incident)
-
-                self.producer.flush()
-                count += 1
-                print(f"[{count}] {incident['severity']} | {incident['service']} | {incident['incident_type']}")
-
-                if max_events and count >= max_events:
-                    print(f"Generated {count} events. Done.")
-                    break
-
-                time.sleep(interval_seconds)
-
-        except KeyboardInterrupt:
-            print("\nStopped.")
-        finally:
-            self.producer.close()
+    def flush(self, timeout: float = 30.0) -> int:
+        return self.producer.flush(timeout)
 
 
-# ── Entry Point ───────────────────────────────────────────────────────────────
+# ── CLI ───────────────────────────────────────────────────────────────────────
+
+
+def run(rate: int, duration: float | None, fanout: int, services: int) -> None:
+    gen = IncidentGenerator(services=services)
+    stopping = {"flag": False}
+
+    def _stop(*_):
+        stopping["flag"] = True
+
+    signal.signal(signal.SIGINT, _stop)
+    signal.signal(signal.SIGTERM, _stop)
+
+    events_per_incident = fanout + 2
+    incidents_per_sec = max(rate / events_per_incident, 0.1)
+    interval = 1.0 / incidents_per_sec
+
+    print(
+        f"Producing ~{rate} events/sec "
+        f"({incidents_per_sec:.1f} incidents/sec x {events_per_incident} events) "
+        f"across {len(gen.services)} services -> {BOOTSTRAP}"
+    )
+    if duration:
+        print(f"Duration: {duration}s")
+    print("Ctrl-C to stop.\n")
+
+    start = time.perf_counter()
+    next_emit = start
+    last_report = start
+    last_sent = 0
+
+    while not stopping["flag"]:
+        now = time.perf_counter()
+        if duration and now - start >= duration:
+            break
+
+        if now >= next_emit:
+            gen.emit_incident(fanout)
+            next_emit += interval
+            # If we have fallen behind, do not try to catch up in a burst.
+            if next_emit < now:
+                next_emit = now + interval
+        else:
+            gen.poll(0)
+            time.sleep(min(interval / 4, 0.002))
+
+        if now - last_report >= 5.0:
+            delta = gen.sent - last_sent
+            print(
+                f"  [{now - start:6.1f}s] sent={gen.sent:>8,}  "
+                f"rate={delta / (now - last_report):>8,.0f} ev/s"
+            )
+            last_report, last_sent = now, gen.sent
+
+    remaining = gen.flush()
+    elapsed = time.perf_counter() - start
+    print(
+        f"\nDone. {gen.sent:,} events in {elapsed:.1f}s "
+        f"({gen.sent / elapsed:,.0f} ev/s average)."
+    )
+    if remaining:
+        print(f"WARNING: {remaining} messages still queued at exit.")
+
+
+def main() -> None:
+    p = argparse.ArgumentParser(description="PagedOut telemetry generator")
+    p.add_argument("--rate", type=int, default=50, help="target events/sec")
+    p.add_argument("--duration", type=float, default=None, help="seconds to run")
+    p.add_argument("--fanout", type=int, default=4, help="log events per incident")
+    p.add_argument(
+        "--services", type=int, default=len(SERVICES), help="distinct services"
+    )
+    args = p.parse_args()
+    run(args.rate, args.duration, args.fanout, args.services)
+
 
 if __name__ == "__main__":
-    generator = IncidentGenerator()
-    generator.run(interval_seconds=2.0)
+    main()

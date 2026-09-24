@@ -63,6 +63,26 @@ services:
       start_period: 20s
     networks: [pagedout]
 
+  # Flink's Kafka enumerator lists partitions up front rather than relying on
+  # broker-side auto-create, so the topics must exist before a job starts.
+  kafka-init:
+    image: apache/kafka:3.8.1
+    container_name: pagedout-kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    command:
+      - sh
+      - -c
+      - |
+        for t in logs.raw metrics.raw alerts.raw signals.normalized incidents.correlated; do
+          /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 \
+            --create --if-not-exists --topic "$$t" --partitions 4 --replication-factor 1
+        done
+        echo "--- topics ---"
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --list
+    networks: [pagedout]
+
   qdrant:
     image: qdrant/qdrant:v1.12.4
     container_name: pagedout-qdrant
@@ -190,6 +210,22 @@ services:
 
   # ── Stream processing ───────────────────────────────────────────────────────
 
+  # Named volumes are created root-owned, but the Flink entrypoint drops
+  # privileges to uid 9999. Without this the first checkpoint fails with
+  # "Failed to create directory for shared state".
+  flink-init:
+    image: alpine:3.20
+    container_name: pagedout-flink-init
+    command:
+      - sh
+      - -c
+      - mkdir -p /flink-checkpoints /flink-savepoints && chown -R 9999:9999 /flink-checkpoints /flink-savepoints
+    volumes:
+      - flink_checkpoints:/flink-checkpoints
+      - flink_savepoints:/flink-savepoints
+    networks: [pagedout]
+    profiles: [flink, all]
+
   flink-jobmanager:
     build:
       context: ./pipeline/flink
@@ -214,8 +250,10 @@ services:
       - flink_savepoints:/flink-savepoints
       - ./pipeline/flink/jobs:/opt/pagedout/jobs:ro
     depends_on:
-      kafka:
-        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+      flink-init:
+        condition: service_completed_successfully
     networks: [pagedout]
     profiles: [flink, all]
 
@@ -237,7 +275,10 @@ services:
       - flink_checkpoints:/flink-checkpoints
       - ./pipeline/flink/jobs:/opt/pagedout/jobs:ro
     depends_on:
-      - flink-jobmanager
+      flink-jobmanager:
+        condition: service_started
+      flink-init:
+        condition: service_completed_successfully
     networks: [pagedout]
     profiles: [flink, all]
 

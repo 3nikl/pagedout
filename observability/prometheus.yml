@@ -1,0 +1,24 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+  external_labels:
+    monitor: pagedout
+
+scrape_configs:
+  - job_name: victim-services
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - checkout-service:8000
+          - payment-service:8000
+          - ledger-service:8000
+    relabel_configs:
+      # Strip the port so `service` matches the name the agents use.
+      - source_labels: [__address__]
+        regex: "([^:]+):.*"
+        target_label: service
+        replacement: "$1"
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

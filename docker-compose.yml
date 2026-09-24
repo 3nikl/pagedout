@@ -1,46 +1,83 @@
+# PagedOut local stack.
+#
+# The full stack does not fit comfortably in a default Docker Desktop VM
+# (this was developed against a 3.8 GB VM), so services are grouped into
+# profiles and memory-capped. Bring up only what a given phase needs:
+#
+#   docker compose up -d                        core only (Kafka, Qdrant, PG, Redis)
+#   docker compose --profile victim up -d       core + victim app + Prometheus/Grafana
+#   docker compose --profile flink up -d        core + Flink cluster
+#   docker compose --profile all up -d          everything (needs ~6 GB VM)
+#
+# The LLM is deliberately NOT containerised. Ollama on the host gets Metal GPU
+# acceleration; inside a Linux container on macOS it would fall back to CPU and
+# run several times slower. Install Ollama natively and `ollama pull phi3:mini`.
+
+name: pagedout
+
+x-victim-base: &victim-base
+  build:
+    context: ./victim
+  restart: unless-stopped
+  mem_limit: 256m
+  networks: [pagedout]
+  profiles: [victim, all]
+  healthcheck:
+    test: ["CMD", "python", "-c", "import httpx,sys; sys.exit(0 if httpx.get('http://localhost:8000/health',timeout=2).status_code==200 else 1)"]
+    interval: 10s
+    timeout: 3s
+    retries: 5
+    start_period: 10s
+
 services:
 
-  zookeeper:
-    image: confluentinc/cp-zookeeper:7.5.0
-    container_name: pagedout-zookeeper
-    environment:
-      ZOOKEEPER_CLIENT_PORT: 2181
-      ZOOKEEPER_TICK_TIME: 2000
-    ports:
-      - "2181:2181"
-    networks:
-      - pagedout-network
+  # ── Core infrastructure ─────────────────────────────────────────────────────
 
   kafka:
-    image: confluentinc/cp-kafka:7.5.0
+    image: apache/kafka:3.8.1
     container_name: pagedout-kafka
-    depends_on:
-      - zookeeper
+    mem_limit: 1g
     ports:
-      - "9092:9092"
+      - "9092:29092"
     environment:
-      KAFKA_BROKER_ID: 1
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,PLAINTEXT_HOST://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: 4
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
-    networks:
-      - pagedout-network
+      KAFKA_HEAP_OPTS: "-Xmx512m -Xms256m"
+      CLUSTER_ID: pagedout-local-cluster-0
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks: [pagedout]
 
   qdrant:
-    image: qdrant/qdrant:latest
+    image: qdrant/qdrant:v1.12.4
     container_name: pagedout-qdrant
+    mem_limit: 512m
     ports:
       - "6333:6333"
       - "6334:6334"
     volumes:
       - qdrant_data:/qdrant/storage
-    networks:
-      - pagedout-network
+    networks: [pagedout]
 
   postgres:
-    image: pgvector/pgvector:pg16
+    image: postgres:16-alpine
     container_name: pagedout-postgres
+    mem_limit: 256m
     environment:
       POSTGRES_DB: pagedout
       POSTGRES_USER: pagedout
@@ -49,21 +86,169 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    networks:
-      - pagedout-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pagedout -d pagedout"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [pagedout]
 
   redis:
     image: redis:7.2-alpine
     container_name: pagedout-redis
+    mem_limit: 128m
+    command: ["redis-server", "--maxmemory", "96mb", "--maxmemory-policy", "allkeys-lru"]
     ports:
       - "6379:6379"
-    networks:
-      - pagedout-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks: [pagedout]
+
+  # ── Victim application ──────────────────────────────────────────────────────
+  # checkout -> payment -> ledger. Breaking ledger cascades upstream, which is
+  # what makes cascade_failure a real observable condition rather than a label.
+
+  checkout-service:
+    <<: *victim-base
+    container_name: checkout-service
+    ports:
+      - "8081:8000"
+    environment:
+      SERVICE_NAME: checkout-service
+      DOWNSTREAM_URL: http://payment-service:8000
+      POOL_SIZE: 20
+    depends_on:
+      payment-service:
+        condition: service_started
+
+  payment-service:
+    <<: *victim-base
+    container_name: payment-service
+    ports:
+      - "8082:8000"
+    environment:
+      SERVICE_NAME: payment-service
+      DOWNSTREAM_URL: http://ledger-service:8000
+      POOL_SIZE: 20
+    depends_on:
+      ledger-service:
+        condition: service_started
+
+  ledger-service:
+    <<: *victim-base
+    container_name: ledger-service
+    ports:
+      - "8083:8000"
+    environment:
+      SERVICE_NAME: ledger-service
+      DOWNSTREAM_URL: ""
+      POOL_SIZE: 20
+
+  # ── Observability ───────────────────────────────────────────────────────────
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: pagedout-prometheus
+    mem_limit: 384m
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=6h
+      - --storage.tsdb.retention.size=512MB
+      - --web.enable-lifecycle
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    networks: [pagedout]
+    profiles: [victim, all]
+
+  grafana:
+    image: grafana/grafana-oss:11.2.0
+    container_name: pagedout-grafana
+    mem_limit: 256m
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_USERS_DEFAULT_THEME: dark
+      GF_INSTALL_PLUGINS: ""
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks: [pagedout]
+    profiles: [victim, all]
+
+  # ── Stream processing ───────────────────────────────────────────────────────
+
+  flink-jobmanager:
+    build:
+      context: ./pipeline/flink
+    container_name: pagedout-flink-jm
+    mem_limit: 1g
+    command: jobmanager
+    ports:
+      - "8088:8081"
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        jobmanager.memory.process.size: 768m
+        state.backend.type: rocksdb
+        state.backend.incremental: true
+        state.checkpoints.dir: file:///flink-checkpoints
+        state.savepoints.dir: file:///flink-savepoints
+        execution.checkpointing.interval: 10s
+        execution.checkpointing.mode: EXACTLY_ONCE
+        execution.checkpointing.timeout: 60s
+    volumes:
+      - flink_checkpoints:/flink-checkpoints
+      - flink_savepoints:/flink-savepoints
+      - ./pipeline/flink/jobs:/opt/pagedout/jobs:ro
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks: [pagedout]
+    profiles: [flink, all]
+
+  flink-taskmanager:
+    build:
+      context: ./pipeline/flink
+    container_name: pagedout-flink-tm
+    mem_limit: 1600m
+    command: taskmanager
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        taskmanager.memory.process.size: 1400m
+        taskmanager.numberOfTaskSlots: 4
+        state.backend.type: rocksdb
+        state.backend.incremental: true
+        state.checkpoints.dir: file:///flink-checkpoints
+    volumes:
+      - flink_checkpoints:/flink-checkpoints
+      - ./pipeline/flink/jobs:/opt/pagedout/jobs:ro
+    depends_on:
+      - flink-jobmanager
+    networks: [pagedout]
+    profiles: [flink, all]
 
 volumes:
   qdrant_data:
   postgres_data:
+  prometheus_data:
+  grafana_data:
+  flink_checkpoints:
+  flink_savepoints:
 
 networks:
-  pagedout-network:
+  pagedout:
     driver: bridge

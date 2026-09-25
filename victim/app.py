@@ -28,8 +28,10 @@ import json
 import logging
 import os
 import random
+import socket
 import sys
 import time
+import uuid
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -56,18 +58,68 @@ VERSION_DEFAULT = os.getenv("APP_VERSION", "v2.3.0")
 # ── Structured logging to stdout ──────────────────────────────────────────────
 
 
+# A log line's severity and the incident it belongs to are things only this
+# service knows. Emitting them here means the log shipper stays dumb and the
+# records land in Kafka already conforming to the incident-signal schema that
+# the Flink job consumes — the same schema the synthetic generator produces.
+LEVEL_TO_SEVERITY = {
+    "FATAL": "P1",
+    "CRITICAL": "P1",
+    "ERROR": "P1",
+    "WARNING": "P2",
+    "WARN": "P2",
+    "INFO": "P3",
+    "DEBUG": "P3",
+}
+
+FAULT_TO_INCIDENT = {
+    "pool_exhaustion": "database_connection_exhaustion",
+    "memory_leak": "memory_leak",
+    "latency_spike": "high_latency_spike",
+    "error_burst": "pod_crash_loop",
+    "dependency_timeout": "network_partition",
+    "bad_deploy": "deployment_failure",
+}
+
+# In Docker the hostname is the short container id, which is the closest
+# analogue this stack has to a pod name.
+POD_NAME = f"{SERVICE_NAME}-{socket.gethostname()}"
+
+
+def _current_incident_type() -> str:
+    """Label logs with the fault currently active, if any.
+
+    Sorted so the label is deterministic when several faults overlap;
+    otherwise set iteration order would make the stream non-reproducible
+    across runs, which would undermine evaluation.
+    """
+    active = sorted(state.faults) if "state" in globals() else []
+    for fault in active:
+        mapped = FAULT_TO_INCIDENT.get(fault)
+        if mapped:
+            return mapped
+    return "healthy"
+
+
 class JsonLogFormatter(logging.Formatter):
     """Emit one JSON object per line so a log shipper can parse without regex."""
 
     def format(self, record: logging.LogRecord) -> str:
+        level = record.levelname
         payload = {
+            "event_id": str(uuid.uuid4()),
             "timestamp": time.strftime(
                 "%Y-%m-%dT%H:%M:%S", time.gmtime(record.created)
             )
             + f".{int(record.msecs):03d}Z",
-            "level": record.levelname,
             "service": SERVICE_NAME,
+            "incident_type": _current_incident_type(),
+            "severity": LEVEL_TO_SEVERITY.get(level, "P3"),
+            "level": level,
             "message": record.getMessage(),
+            "pod": POD_NAME,
+            "namespace": "production",
+            "emitted_at_ms": int(record.created * 1000),
         }
         if hasattr(record, "extra_fields"):
             payload.update(record.extra_fields)

@@ -22,6 +22,17 @@ x-victim-base: &victim-base
   mem_limit: 256m
   networks: [pagedout]
   profiles: [victim, all]
+  # fluentd-async keeps the container startable when Fluent Bit is not yet
+  # listening. Without it the Docker daemon blocks on connecting to the log
+  # driver and the service fails to start at all.
+  logging:
+    driver: fluentd
+    options:
+      fluentd-address: localhost:24224
+      fluentd-async: "true"
+      fluentd-retry-wait: "1s"
+      fluentd-max-retries: "30"
+      tag: pagedout.{{.Name}}
   healthcheck:
     test: ["CMD", "python", "-c", "import httpx,sys; sys.exit(0 if httpx.get('http://localhost:8000/health',timeout=2).status_code==200 else 1)"]
     interval: 10s
@@ -168,6 +179,24 @@ services:
       POOL_SIZE: 20
 
   # ── Observability ───────────────────────────────────────────────────────────
+
+  # Log shipper: victim stdout -> Kafka logs.raw, so real application logs
+  # flow through the same Flink correlation job as synthetic telemetry.
+  fluent-bit:
+    image: fluent/fluent-bit:3.1.9
+    container_name: pagedout-fluent-bit
+    mem_limit: 128m
+    ports:
+      - "24224:24224"
+      - "2020:2020"
+    volumes:
+      - ./observability/fluent-bit/fluent-bit.conf:/fluent-bit/etc/fluent-bit.conf:ro
+      - ./observability/fluent-bit/parsers.conf:/fluent-bit/etc/parsers.conf:ro
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+    networks: [pagedout]
+    profiles: [victim, all]
 
   prometheus:
     image: prom/prometheus:v2.54.1

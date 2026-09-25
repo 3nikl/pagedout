@@ -1,132 +1,91 @@
 """
-PagedOut - Investigator Agent
-Investigates the incident by calling tools directly.
-Uses phi3:mini only for final root cause summary.
-No tool calling via LLM - avoids phi3:mini limitation.
+Investigator agent: gathers real evidence, then asks the LLM to name a cause.
+
+Previously this file queried `random.uniform(0.3, 0.9)` and returned a
+hardcoded string asserting that a deploy had happened four minutes ago. The
+LLM then "reasoned" over that. Every root cause it produced was fiction.
+
+Now every probe hits live infrastructure — Prometheus, the services' own
+/health endpoints, and the declared dependency topology. See agents/tools.py.
+
+Design note on why tools are called directly in Python rather than through
+LLM tool calling: phi3:mini is unreliable at emitting well-formed tool call
+structures, and a failed tool call means no evidence at all. Selecting
+probes deterministically by incident type and using the model only for the
+final summary puts the model where it is strong (language) and keeps it out
+of where it is weak (structure).
 """
 
-import json
-import random
-from datetime import datetime
-from langchain_ollama import ChatOllama
+from __future__ import annotations
+
 from langchain_core.messages import HumanMessage
+from langchain_ollama import ChatOllama
 
+from tools import gather_evidence
 
-# ── TOOL FUNCTIONS (called directly, not via LLM) ─────────────────────────────
+MODEL = "phi3:mini"
 
-def query_prometheus(service: str, metric: str) -> str:
-    """Query Prometheus for current metric value."""
-    metrics = {
-        "error_rate": round(random.uniform(0.3, 0.9), 2),
-        "db_connections": random.randint(85, 100),
-        "latency_p99": random.randint(2000, 8000),
-        "memory_usage": random.randint(80, 99),
-        "cpu_usage": random.randint(70, 95),
-    }
-    value = metrics.get(metric, round(random.uniform(0, 100), 2))
-    return f"{service} {metric}={value} at {datetime.now().strftime('%H:%M:%S')}"
-
-
-def query_recent_logs(service: str) -> str:
-    """Query recent error logs for a service."""
-    return f"""Recent logs for {service}:
-ERROR: Anomaly detected at {datetime.now().strftime('%H:%M:%S')}
-WARN: Error rate elevated above threshold
-INFO: Health check failing on port 8080"""
-
-
-def check_recent_deployments(service: str) -> str:
-    """Check recent deployments."""
-    return f"""Deployments for {service}:
-- v2.3.1 deployed 4 minutes ago (connection pool config changed)
-- v2.3.0 deployed 2 days ago (stable)"""
-
-
-def get_service_dependencies(service: str) -> str:
-    """Get service dependencies."""
-    deps = {
-        "payment-service": ["postgres", "redis", "auth-service"],
-        "order-service": ["payment-service", "inventory-service"],
-        "auth-service": ["redis", "postgres"],
-    }
-    service_deps = deps.get(service, ["postgres", "redis"])
-    return f"{service} depends on: {', '.join(service_deps)}"
-
-
-# ── METRIC MAPPING per incident type ─────────────────────────────────────────
-
-INCIDENT_METRICS = {
-    "database_connection_exhaustion": "db_connections",
-    "memory_leak": "memory_usage",
-    "high_latency_spike": "latency_p99",
-    "cpu_throttling": "cpu_usage",
-    "pod_crash_loop": "error_rate",
-    "disk_space_critical": "error_rate",
-    "network_partition": "error_rate",
-    "deployment_failure": "error_rate",
-    "cascade_failure": "error_rate",
-    "unknown": "error_rate",
-}
-
-
-# ── INVESTIGATOR AGENT ────────────────────────────────────────────────────────
 
 def investigator_agent(state: dict) -> dict:
-    print("\n" + "="*50)
+    print("\n" + "=" * 50)
     print("🔎 INVESTIGATOR AGENT")
-    print("="*50)
-    print(f"Investigating: {state['incident_type']} on {state['service']}")
+    print("=" * 50)
 
-    service = state['service']
-    incident_type = state.get('incident_type', 'unknown')
-    evidence = list(state.get('evidence_chain', []))
+    service = state["service"]
+    incident_type = state.get("incident_type", "unknown")
+    print(f"Investigating: {incident_type} on {service}")
 
-    # Step 1 — Query most relevant metric
-    metric = INCIDENT_METRICS.get(incident_type, "error_rate")
-    print(f"\n   🔧 Querying Prometheus: {metric}")
-    prometheus_result = query_prometheus(service, metric)
-    print(f"   📊 {prometheus_result}")
-    evidence.append(f"[INVESTIGATOR] Prometheus: {prometheus_result}")
+    findings = gather_evidence(service, incident_type)
 
-    # Step 2 — Query recent logs
-    print(f"\n   🔧 Querying recent logs...")
-    log_result = query_recent_logs(service)
-    print(f"   📊 {log_result[:80]}...")
-    evidence.append(f"[INVESTIGATOR] Logs: {log_result[:150]}")
+    evidence_lines = list(state.get("evidence_chain", []))
+    evidence_values: list[dict] = list(state.get("evidence_values", []))
 
-    # Step 3 — Check deployments
-    print(f"\n   🔧 Checking recent deployments...")
-    deploy_result = check_recent_deployments(service)
-    print(f"   📊 {deploy_result[:80]}...")
-    evidence.append(f"[INVESTIGATOR] Deployments: {deploy_result[:150]}")
+    for ev in findings:
+        mark = "📊" if ev.ok else "⚠️ "
+        print(f"   {mark} {ev.summary}")
+        evidence_lines.append(str(ev))
+        evidence_values.append(ev.values)
 
-    # Step 4 — Check dependencies
-    print(f"\n   🔧 Checking service dependencies...")
-    deps_result = get_service_dependencies(service)
-    print(f"   📊 {deps_result}")
-    evidence.append(f"[INVESTIGATOR] Dependencies: {deps_result}")
+    # A dependency probe that found unhealthy downstream services is the
+    # strongest single signal available: it reclassifies the incident from
+    # "this service is broken" to "this service is a victim". Surfacing it
+    # explicitly means the planner does not have to infer it from prose.
+    cascade_origin = None
+    for ev in findings:
+        unhealthy = ev.values.get("unhealthy") or []
+        if unhealthy:
+            cascade_origin = unhealthy[0]
+            break
 
-    # Step 5 — Use phi3:mini to summarize root cause
-    print(f"\n   🧠 Summarizing root cause with phi3:mini...")
-    llm = ChatOllama(model="phi3:mini", temperature=0)
+    usable = [e for e in findings if e.ok]
+    if not usable:
+        root_cause = (
+            f"Investigation inconclusive: no telemetry available for {service}."
+        )
+        print(f"\n   ⚠️  {root_cause}")
+    else:
+        print(f"\n   🧠 Summarising root cause with {MODEL}...")
+        llm = ChatOllama(model=MODEL, temperature=0)
+        prompt = f"""You are an SRE. Based ONLY on this evidence, state the root cause.
 
-    evidence_text = "\n".join(evidence)
-    prompt = f"""Based on this evidence, what is the root cause of this incident?
 Incident: {incident_type} on {service}
+
 Evidence:
-{evidence_text}
+{chr(10).join('- ' + e.summary for e in usable)}
 
-Respond in ONE sentence starting with: "Root cause is..."
-"""
-    response = llm.invoke([HumanMessage(content=prompt)])
-    root_cause = response.content.strip()[:200]
+Answer in ONE sentence beginning "Root cause is". If the evidence shows a
+downstream dependency is unhealthy, say that the dependency is the origin."""
+        root_cause = llm.invoke([HumanMessage(content=prompt)]).content.strip()[:300]
 
-    print(f"\n✅ Investigation Complete:")
-    print(f"   Root Cause: {root_cause}")
-    print(f"   Evidence points: {len(evidence)}")
+    print(f"\n✅ Investigation complete")
+    print(f"   Root cause: {root_cause[:140]}")
+    if cascade_origin:
+        print(f"   Cascade origin identified: {cascade_origin}")
 
     return {
         **state,
-        "evidence_chain": evidence,
+        "evidence_chain": evidence_lines,
+        "evidence_values": evidence_values,
         "root_cause": root_cause,
+        "cascade_origin": cascade_origin or "",
     }

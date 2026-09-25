@@ -1,101 +1,102 @@
 """
-PagedOut - Runbook RAG Agent (Phase 5)
-Real Qdrant vector search replacing dictionary lookup.
+Runbook retrieval agent.
+
+Now backed by the Phase 2 hybrid retriever (dense + BM25, fused with RRF)
+over the real 1,342-document corpus, instead of dense-only search over 400
+permutations of 20 runbooks.
+
+Why the query is built from the root cause and not just the incident type:
+the incident type is one of nine coarse labels, so using it alone makes
+every database incident retrieve the same runbook. The investigator's root
+cause sentence carries the specific detail — which service, which metric,
+which dependency — that makes retrieval discriminate.
 """
 
-from qdrant_client import QdrantClient
-from sentence_transformers import SentenceTransformer
+from __future__ import annotations
 
-QDRANT_HOST = "localhost"
-QDRANT_PORT = 6333
-COLLECTION_NAME = "runbooks"
-EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+import sys
+from pathlib import Path
+
+# The retriever lives in rag/, which is a sibling package.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "rag"))
+
+from retrieve import HybridRetriever  # noqa: E402
+
 TOP_K = 3
 
-print("Loading RAG components...")
-_model = SentenceTransformer(EMBEDDING_MODEL)
-_client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
-print("RAG ready.")
-
-
-def search_runbooks(query: str, incident_type: str = None, top_k: int = TOP_K):
-    vector = _model.encode(query).tolist()
-
-    search_filter = None
-    if incident_type and incident_type != "unknown":
-        from qdrant_client.models import Filter, FieldCondition, MatchValue
-        search_filter = Filter(
-            must=[FieldCondition(
-                key="incident_type",
-                match=MatchValue(value=incident_type)
-            )]
-        )
-
-    results = _client.query_points(
-        collection_name=COLLECTION_NAME,
-        query=vector,
-        query_filter=search_filter,
-        limit=top_k,
-        with_payload=True
-    )
-    return results.points
+# Built once at import. Loading the embedding model takes ~2s and the BM25
+# state is 11k terms; doing that per incident would dominate pipeline latency.
+print("Loading hybrid retriever...")
+_retriever = HybridRetriever()
+print("Retriever ready.")
 
 
 def runbook_rag_agent(state: dict) -> dict:
-    print("\n" + "="*50)
-    print("📚 RUNBOOK RAG AGENT (Qdrant Vector Search)")
-    print("="*50)
+    print("\n" + "=" * 50)
+    print("📚 RUNBOOK RAG AGENT (hybrid: dense + BM25, RRF)")
+    print("=" * 50)
 
-    incident_type = state.get('incident_type', 'unknown')
-    service = state.get('service', '')
-    root_cause = state.get('root_cause', '')
-    evidence = state.get('evidence_chain', [])
+    incident_type = state.get("incident_type", "unknown")
+    service = state.get("service", "")
+    root_cause = state.get("root_cause", "")
+    alert = state.get("alert_title", "")
 
-    query = f"{incident_type} {service} {root_cause}"
-    print(f"Query: '{query[:80]}'")
-    print(f"Searching {COLLECTION_NAME} collection...")
+    query = " ".join(p for p in (alert, root_cause, service) if p).strip() or incident_type
+    print(f"Query: {query[:110]!r}")
 
-    # Search with type filter first
-    results = search_runbooks(query, incident_type=incident_type, top_k=TOP_K)
+    # First pass filters to the triaged incident type, which keeps a
+    # semantically similar but categorically wrong runbook from outranking
+    # the right one.
+    hits, ms = _retriever.search_timed(
+        query, incident_type=incident_type, top_k=TOP_K, mode="hybrid"
+    )
 
-    # Fallback — search without filter
-    if not results:
-        print("No results with filter, searching all runbooks...")
-        results = search_runbooks(query, top_k=TOP_K)
+    # The filter can be too narrow — triage may have guessed a type with no
+    # runbooks, or mislabelled it. Retry unfiltered rather than returning
+    # nothing.
+    if not hits:
+        print("   no results with incident_type filter, retrying unfiltered...")
+        hits, ms = _retriever.search_timed(query, top_k=TOP_K, mode="hybrid")
 
-    if not results:
+    if not hits:
+        print("   ⚠️  no runbook matched")
         return {
             **state,
-            "matched_runbook": "General Incident Response",
-            "remediation_steps": [
-                "SAFE: Gather logs and metrics",
-                "SAFE: Check recent deployments",
-                "RISKY: Escalate to senior engineer",
+            "matched_runbook": "",
+            "remediation_steps": [],
+            "retrieval_ms": round(ms, 1),
+            "evidence_chain": state.get("evidence_chain", []) + [
+                "[RUNBOOK] no matching runbook found"
             ],
-            "evidence_chain": evidence + ["[RUNBOOK] No matching runbook found."]
         }
 
-    top = results[0]
-    runbook = top.payload
-    score = top.score
+    print(f"   retrieved {len(hits)} in {ms:.1f}ms")
+    for i, h in enumerate(hits, 1):
+        print(f"   {i}. [{h.source}] {h.title[:56]} (score {h.score:.3f})")
 
-    print(f"\n✅ Top Match:")
-    print(f"   Title: {runbook['title']}")
-    print(f"   Similarity: {score:.3f}")
-    print(f"\n   All matches:")
-    for i, r in enumerate(results):
-        print(f"   {i+1}. {r.payload['title']} (score: {r.score:.3f})")
+    # Prefer an actual runbook over a postmortem chunk. Postmortems describe
+    # what happened at some other company; runbooks carry executable steps.
+    # RRF ranks on relevance alone and has no notion of which is actionable.
+    best = next((h for h in hits if h.source == "runbook"), hits[0])
+    if best is not hits[0]:
+        print(f"   ↪ preferring runbook '{best.title[:50]}' over top postmortem hit")
 
-    print(f"\n   Steps:")
-    for step in runbook['steps']:
-        print(f"   - {step}")
+    print(f"\n✅ Selected: {best.title}")
+    for step in best.steps[:8]:
+        print(f"     - {step}")
 
     return {
         **state,
-        "matched_runbook": runbook['title'],
-        "remediation_steps": runbook['steps'],
-        "evidence_chain": evidence + [
-            f"[RUNBOOK] Found: '{runbook['title']}' similarity={score:.3f}",
-            f"[RUNBOOK] Prevention: {runbook.get('prevention', 'N/A')[:100]}"
-        ]
+        "matched_runbook": best.title,
+        "remediation_steps": best.steps,
+        "retrieval_ms": round(ms, 1),
+        "retrieved_sources": [
+            {"doc_id": h.doc_id, "title": h.title, "source": h.source,
+             "score": round(h.score, 4)}
+            for h in hits
+        ],
+        "evidence_chain": state.get("evidence_chain", []) + [
+            f"[RUNBOOK] '{best.title}' via hybrid retrieval "
+            f"({len(hits)} candidates, {ms:.0f}ms)"
+        ],
     }

@@ -36,7 +36,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Request, Response
 from prometheus_client import (
     CONTENT_TYPE_LATEST,
     Counter,
@@ -194,6 +194,7 @@ class ServiceState:
         return {
             "service": SERVICE_NAME,
             "version": self.version,
+            "previous_version": self.previous_version,
             "pool_size": self.pool_size,
             "pool_in_use": self.pool_in_use,
             "pool_utilization": round(self.pool_in_use / max(self.pool_size, 1), 3),
@@ -412,52 +413,96 @@ async def chaos_inject(fault: str) -> dict[str, Any]:
 # ── Admin endpoints — the real remediation surface ────────────────────────────
 
 
+# ── Server-side idempotency ───────────────────────────────────────────────────
+#
+# GROUNDHOG FINDING (seed 149): client-side idempotency keys are necessary but
+# not sufficient. rollback_version is an involution, so a network-duplicated
+# request left the service back in its original state, and no amount of
+# client-side state inspection could reveal it had run twice. The server has
+# to remember keys and refuse to apply one twice. This is what Stripe and AWS
+# do with Idempotency-Key, and for the same reason.
+
+_IDEMPOTENCY_CACHE: dict[str, dict[str, Any]] = {}
+_IDEMPOTENCY_MAX = 10_000
+
+
+def _dedupe(request: Request) -> tuple[str | None, dict[str, Any] | None]:
+    """Return (key, cached_response). A cached response means: do not re-apply."""
+    key = request.headers.get("Idempotency-Key")
+    if not key:
+        return None, None
+    return key, _IDEMPOTENCY_CACHE.get(key)
+
+
+def _remember(key: str | None, response: dict[str, Any]) -> dict[str, Any]:
+    if key:
+        # Bounded so a long-running service cannot grow this without limit.
+        if len(_IDEMPOTENCY_CACHE) >= _IDEMPOTENCY_MAX:
+            _IDEMPOTENCY_CACHE.clear()
+        _IDEMPOTENCY_CACHE[key] = response
+    return response
+
+
 class ResizeRequest(BaseModel):
     size: int
 
 
 @app.post("/admin/pool/resize")
-async def pool_resize(req: ResizeRequest) -> dict[str, Any]:
+async def pool_resize(req: ResizeRequest, request: Request) -> dict[str, Any]:
+    key, cached = _dedupe(request)
+    if cached is not None:
+        return {**cached, "deduplicated": True}
     if not 1 <= req.size <= 500:
         raise HTTPException(status_code=400, detail="size must be within 1..500")
     before = state.pool_size
     state.pool_size = req.size
     refresh_metrics()
     emit("INFO", f"Connection pool resized {before} -> {req.size}")
-    return {"changed": before != req.size, "before": before, "after": req.size}
+    return _remember(key, {"changed": before != req.size, "before": before,
+                           "after": req.size})
 
 
 @app.post("/admin/pool/drain")
-async def pool_drain() -> dict[str, Any]:
+async def pool_drain(request: Request) -> dict[str, Any]:
+    key, cached = _dedupe(request)
+    if cached is not None:
+        return {**cached, "deduplicated": True}
     before = state.pool_in_use
     state.pool_in_use = 0
     state.faults.discard("pool_exhaustion")
     refresh_metrics()
     emit("INFO", f"Drained {before} idle connections")
-    return {"changed": before > 0, "drained": before}
+    return _remember(key, {"changed": before > 0, "drained": before})
 
 
 @app.post("/admin/cache/clear")
-async def cache_clear() -> dict[str, Any]:
+async def cache_clear(request: Request) -> dict[str, Any]:
+    key, cached = _dedupe(request)
+    if cached is not None:
+        return {**cached, "deduplicated": True}
     before = len(state.cache)
     state.cache.clear()
     state.ballast.clear()
     state.faults.discard("memory_leak")
     refresh_metrics()
     emit("INFO", f"Cleared {before} cache entries and released heap ballast")
-    return {"changed": before > 0, "cleared": before}
+    return _remember(key, {"changed": before > 0, "cleared": before})
 
 
 @app.post("/admin/version/rollback")
-async def version_rollback() -> dict[str, Any]:
+async def version_rollback(request: Request) -> dict[str, Any]:
+    key, cached = _dedupe(request)
+    if cached is not None:
+        return {**cached, "deduplicated": True}
     if state.version == state.previous_version:
-        return {"changed": False, "version": state.version}
+        return _remember(key, {"changed": False, "version": state.version})
     rolled_from = state.version
     state.version = state.previous_version
     state.faults.discard("bad_deploy")
     refresh_metrics()
     emit("INFO", f"Rolled back {rolled_from} -> {state.version}")
-    return {"changed": True, "from": rolled_from, "to": state.version}
+    return _remember(key, {"changed": True, "from": rolled_from,
+                           "to": state.version})
 
 
 if __name__ == "__main__":

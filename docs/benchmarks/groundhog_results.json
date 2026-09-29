@@ -1,0 +1,13 @@
+{
+  "runs": 600000,
+  "wall_seconds": 6.6,
+  "runs_per_second": 90903.0,
+  "simulated_seconds": 772189.6,
+  "time_compression": 116990.6,
+  "crashes": 23199,
+  "recovered": 23199,
+  "side_effects": 582115,
+  "violations": 0,
+  "by_invariant": {},
+  "findings": []
+}

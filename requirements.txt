@@ -1,20 +1,33 @@
 # PagedOut — Requirements
 # Python 3.11+
 #
-# These are the versions the code is actually developed and run against.
-# Everything below is imported somewhere in the codebase.
+# Pinned to the versions the code is actually developed and run against.
+#
+# NOTE: groundhog/ has NO third-party dependencies. The simulator is
+# stdlib-only on purpose — it keeps CI fast and makes the suite portable to
+# any machine with a Python interpreter. Nothing below is needed to run it.
 
 # Agent orchestration
 langgraph==1.1.6
 langchain-core==1.2.29
 langchain-ollama==1.1.0
 
+# Graph checkpointing to PostgreSQL
+langgraph-checkpoint-postgres
+psycopg[binary,pool]
+
 # Vector search + embeddings
 qdrant-client==1.17.1
 sentence-transformers==3.3.1
 
-# Kafka producer (pipeline/log_generator.py)
-kafka-python==2.3.1
+# Kafka producer and load harness
+confluent-kafka==2.6.0
+
+# API + dashboard
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+pydantic==2.9.2
+httpx==0.27.2
 
 # Dataset scraper (finetuning/dataset/scraper/)
 requests==2.31.0
@@ -24,25 +37,17 @@ beautifulsoup4==4.12.2
 numpy==1.26.4
 
 
-# ── Not yet used ──────────────────────────────────────────────────────────────
-# Kept here as a record of intent, deliberately not installed. Each of these
-# belongs to a roadmap item that has no code yet — see "Not built yet" in the
-# README. Uncomment when the corresponding feature actually lands.
+# ── Not used ──────────────────────────────────────────────────────────────────
+# Kept as a record of intent. Each belongs to something with no code yet —
+# see "What is not built" in the README.
 #
-# Fine-tuning (no training script exists yet)
+# Fine-tuning: no training script exists; 128 examples would not produce a
+# usable adapter.
 #   transformers, peft, trl, bitsandbytes, datasets, accelerate
 #
-# Evaluation (no eval harness exists yet)
-#   ragas
-#
-# Observability (nothing is instrumented yet)
+# LLM observability: Prometheus and Grafana already cover what matters here.
 #   langsmith, arize-phoenix, mlflow, opentelemetry-api, opentelemetry-sdk
 #
-# API + frontend (api/ and frontend/ are empty)
-#   fastapi, uvicorn, celery
-#
-# Graph checkpointing (graph.compile() takes no checkpointer yet)
-#   psycopg2-binary, sqlalchemy, redis, langgraph-checkpoint-postgres
-#
-# Output validation (risk check is currently a string prefix)
-#   guardrails-ai, pydantic
+# Output validation is done with Pydantic against a closed action registry
+# (remediation/registry.py), not with a guardrails library.
+#   guardrails-ai

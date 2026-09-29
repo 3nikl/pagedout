@@ -1,0 +1,78 @@
+# PagedOut API + dashboard.
+#
+# The API needs to reach the victim services, Prometheus and Qdrant, so it
+# runs in the same namespace and addresses them by Service DNS.
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pagedout-api
+  namespace: pagedout
+  labels: { app: pagedout-api, tier: control }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: pagedout-api }
+  template:
+    metadata:
+      labels: { app: pagedout-api, tier: control }
+    spec:
+      containers:
+        - name: api
+          image: pagedout/api:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { containerPort: 8000, name: http }
+          env:
+            - { name: PROMETHEUS_URL, value: "http://prometheus:9090" }
+            - { name: QDRANT_HOST, value: "qdrant" }
+            - { name: PAGEDOUT_POSTGRES_URI,
+                valueFrom: { secretKeyRef: { name: pagedout-db, key: uri } } }
+          resources:
+            requests: { memory: 256Mi, cpu: 100m }
+            limits: { memory: 768Mi, cpu: 1000m }
+          readinessProbe:
+            httpGet: { path: /api/health, port: http }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pagedout-api
+  namespace: pagedout
+spec:
+  selector: { app: pagedout-api }
+  ports:
+    - { name: http, port: 80, targetPort: http }
+
+---
+# The API can inject faults and execute remediation, so it must not be
+# exposed without authentication. Left as ClusterIP deliberately; reaching it
+# is a port-forward or an authenticated Ingress, never a bare LoadBalancer.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-egress
+  namespace: pagedout
+spec:
+  podSelector:
+    matchLabels: { app: pagedout-api }
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: { tier: victim }
+      ports:
+        - { protocol: TCP, port: 8000 }
+    - to:
+        - podSelector: {}
+      ports:
+        - { protocol: TCP, port: 9090 }   # prometheus
+        - { protocol: TCP, port: 6333 }   # qdrant
+        - { protocol: TCP, port: 5432 }   # postgres
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - { protocol: UDP, port: 53 }     # DNS

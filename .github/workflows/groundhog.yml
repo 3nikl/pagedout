@@ -1,0 +1,108 @@
+# Deterministic simulation testing in CI.
+#
+# This is the whole argument for DST as an engineering practice: the suite
+# explores tens of thousands of fault interleavings, needs no infrastructure
+# at all, finishes in seconds, and cannot flake — because every scenario is
+# reproduced from a seed rather than from timing.
+#
+# A conventional chaos suite could not run here. It would need a cluster, it
+# would take minutes, and it would be flaky enough that people would start
+# ignoring it.
+
+name: Groundhog
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      seeds:
+        description: "Seeds per scenario for the extended sweep"
+        default: "50000"
+
+jobs:
+  simulation:
+    name: Deterministic simulation
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # The simulator deliberately has no third-party dependencies, so there
+      # is nothing to install. That is a property worth protecting: it keeps
+      # CI fast and makes the suite trivially portable.
+      - name: Confirm the simulator has no external dependencies
+        run: |
+          cd groundhog
+          python -c "import sim, world, runner, invariants; print('stdlib only: OK')"
+
+      - name: Determinism — same seed must produce an identical trace
+        run: |
+          cd groundhog
+          python - <<'EOF'
+          import sys
+          from runner import SCENARIOS, verify_determinism
+          seeds = list(range(1, 201))
+          failed = False
+          for scenario in SCENARIOS:
+              ok, message = verify_determinism(scenario, seeds)
+              print(f"{'PASS' if ok else 'FAIL'}  {message}")
+              failed |= not ok
+          sys.exit(1 if failed else 0)
+          EOF
+
+      - name: Regression seeds — known bugs must stay fixed
+        run: python groundhog/test_regressions.py
+
+      - name: Sweep
+        run: |
+          python groundhog/explore.py \
+            --seeds ${{ github.event.inputs.seeds || 20000 }} \
+            --workers 2
+
+      - name: Fail if any invariant was violated
+        run: |
+          python - <<'EOF'
+          import json, sys, pathlib
+          path = pathlib.Path("docs/benchmarks/groundhog_results.json")
+          data = json.loads(path.read_text())
+          violations = data.get("violations", 0)
+          print(f"runs={data['runs']:,}  "
+                f"compression={data['time_compression']:,.0f}x  "
+                f"violations={violations}")
+          if violations:
+              for finding in data.get("findings", [])[:10]:
+                  print(f"  {finding['invariant']} "
+                        f"seed={finding['seed']} "
+                        f"scenario={finding['scenario']}")
+                  print(f"    {finding['detail']}")
+              sys.exit(1)
+          EOF
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: groundhog-results
+          path: docs/benchmarks/groundhog_results.json
+          retention-days: 30
+
+  lint:
+    name: Compile check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Byte-compile every module
+        run: |
+          python -m compileall -q agents rag pipeline remediation groundhog victim api
+          echo "all modules compile"

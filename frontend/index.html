@@ -1,0 +1,511 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PagedOut</title>
+<style>
+  :root {
+    --bg:#0b0e14; --panel:#11151f; --panel-2:#161b28; --line:#232a3b;
+    --fg:#e6e9f0; --muted:#8b95ad; --dim:#5b6479;
+    --ok:#3ddc97; --warn:#ffb454; --bad:#ff6b6b; --accent:#6ea8fe; --violet:#b48ead;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  }
+  * { box-sizing:border-box; }
+  body {
+    margin:0; background:var(--bg); color:var(--fg);
+    font-family:var(--sans); font-size:14px; line-height:1.5;
+  }
+  a { color:var(--accent); }
+  .wrap { max-width:1280px; margin:0 auto; padding:24px 16px 64px; }
+
+  header { border-bottom:1px solid var(--line); padding-bottom:18px; margin-bottom:24px; }
+  h1 { margin:0 0 4px; font-size:24px; letter-spacing:-.4px; }
+  h1 span { color:var(--accent); }
+  .tagline { color:var(--muted); font-size:13px; }
+  .status-row { display:flex; gap:8px; flex-wrap:wrap; margin-top:12px; }
+  .chip {
+    font-family:var(--mono); font-size:11px; padding:3px 9px; border-radius:999px;
+    border:1px solid var(--line); background:var(--panel-2); color:var(--muted);
+  }
+  .chip.up { color:var(--ok); border-color:rgba(61,220,151,.35); }
+  .chip.down { color:var(--bad); border-color:rgba(255,107,107,.35); }
+
+  nav { display:flex; gap:4px; margin-bottom:22px; flex-wrap:wrap; }
+  nav button {
+    background:transparent; border:1px solid transparent; color:var(--muted);
+    padding:7px 14px; border-radius:8px; cursor:pointer; font-size:13px;
+    font-family:inherit;
+  }
+  nav button:hover { color:var(--fg); background:var(--panel); }
+  nav button[aria-selected="true"] {
+    color:var(--fg); background:var(--panel); border-color:var(--line);
+  }
+
+  .grid { display:grid; gap:16px; }
+  .grid.c2 { grid-template-columns:repeat(auto-fit,minmax(340px,1fr)); }
+  .grid.c3 { grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); }
+  .grid.c4 { grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); }
+
+  .card {
+    background:var(--panel); border:1px solid var(--line);
+    border-radius:12px; padding:16px;
+  }
+  .card h3 {
+    margin:0 0 12px; font-size:12px; text-transform:uppercase;
+    letter-spacing:.9px; color:var(--muted); font-weight:600;
+  }
+
+  .stat { text-align:left; }
+  .stat .v { font-size:27px; font-weight:650; letter-spacing:-.6px; font-family:var(--mono); }
+  .stat .l { font-size:11px; color:var(--muted); margin-top:3px; }
+  .stat .s { font-size:11px; color:var(--dim); margin-top:2px; }
+  .v.ok { color:var(--ok); } .v.warn { color:var(--warn); }
+  .v.bad { color:var(--bad); } .v.accent { color:var(--accent); }
+
+  .svc {
+    display:flex; align-items:center; gap:12px; padding:11px 0;
+    border-bottom:1px solid var(--line);
+  }
+  .svc:last-child { border-bottom:none; }
+  .dot { width:9px; height:9px; border-radius:50%; flex:0 0 auto; }
+  .dot.ok { background:var(--ok); box-shadow:0 0 8px rgba(61,220,151,.55); }
+  .dot.bad { background:var(--bad); box-shadow:0 0 8px rgba(255,107,107,.55); }
+  .dot.unk { background:var(--dim); }
+  .svc .name { font-family:var(--mono); font-size:13px; flex:1; }
+  .svc .meta { font-family:var(--mono); font-size:11px; color:var(--muted); }
+  .arrow { color:var(--dim); text-align:center; font-size:12px; margin:-4px 0; }
+
+  button.act {
+    background:var(--panel-2); border:1px solid var(--line); color:var(--fg);
+    padding:7px 12px; border-radius:8px; cursor:pointer; font-size:12px;
+    font-family:var(--mono);
+  }
+  button.act:hover { border-color:var(--accent); color:var(--accent); }
+  button.act.danger:hover { border-color:var(--bad); color:var(--bad); }
+  button.act.good:hover { border-color:var(--ok); color:var(--ok); }
+  button.act:disabled { opacity:.4; cursor:not-allowed; }
+  .btn-row { display:flex; gap:8px; flex-wrap:wrap; }
+
+  pre {
+    background:#080b11; border:1px solid var(--line); border-radius:8px;
+    padding:12px; overflow-x:auto; font-family:var(--mono); font-size:11.5px;
+    color:var(--muted); margin:0; max-height:380px; line-height:1.55;
+  }
+  .kv { display:flex; justify-content:space-between; gap:12px; padding:5px 0;
+        font-family:var(--mono); font-size:12px; border-bottom:1px solid var(--line); }
+  .kv:last-child { border-bottom:none; }
+  .kv .k { color:var(--muted); } .kv .v2 { color:var(--fg); }
+
+  table { width:100%; border-collapse:collapse; font-size:12.5px; }
+  th { text-align:left; color:var(--muted); font-weight:600; font-size:11px;
+       text-transform:uppercase; letter-spacing:.6px; padding:8px 10px;
+       border-bottom:1px solid var(--line); }
+  td { padding:9px 10px; border-bottom:1px solid var(--line); font-family:var(--mono); }
+  tr:last-child td { border-bottom:none; }
+  td.num { text-align:right; }
+
+  .badge { font-family:var(--mono); font-size:10px; padding:2px 7px;
+           border-radius:5px; border:1px solid var(--line); }
+  .badge.crit { color:var(--bad); border-color:rgba(255,107,107,.4); }
+  .badge.fixed { color:var(--ok); border-color:rgba(61,220,151,.4); }
+  .badge.low { color:var(--ok); } .badge.high { color:var(--warn); }
+
+  .bug { border-left:3px solid var(--bad); padding-left:14px; margin-bottom:22px; }
+  .bug.fixed { border-left-color:var(--ok); }
+  .bug h4 { margin:0 0 5px; font-size:14px; font-family:var(--mono); }
+  .bug p { margin:6px 0; color:var(--muted); font-size:13px; }
+
+  input[type=text] {
+    background:#080b11; border:1px solid var(--line); color:var(--fg);
+    padding:8px 11px; border-radius:8px; font-family:var(--mono);
+    font-size:12.5px; width:100%;
+  }
+  select {
+    background:var(--panel-2); border:1px solid var(--line); color:var(--fg);
+    padding:8px 10px; border-radius:8px; font-family:var(--mono); font-size:12px;
+  }
+  .hint { color:var(--dim); font-size:11.5px; margin-top:8px; }
+  .hidden { display:none; }
+  .note { color:var(--warn); font-size:12px; background:rgba(255,180,84,.07);
+          border:1px solid rgba(255,180,84,.25); border-radius:8px; padding:10px 12px; }
+  footer { margin-top:40px; padding-top:18px; border-top:1px solid var(--line);
+           color:var(--dim); font-size:12px; }
+  @media (max-width:640px){ .wrap{padding:16px 12px 48px;} h1{font-size:20px;} }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>Paged<span>Out</span></h1>
+  <div class="tagline">Autonomous incident remediation, validated by deterministic simulation testing</div>
+  <div class="status-row" id="deps"><span class="chip">connecting…</span></div>
+</header>
+
+<nav>
+  <button data-tab="live" aria-selected="true">Live system</button>
+  <button data-tab="groundhog" aria-selected="false">Groundhog</button>
+  <button data-tab="retrieval" aria-selected="false">Retrieval</button>
+  <button data-tab="numbers" aria-selected="false">Measured results</button>
+</nav>
+
+<!-- ─────────────── LIVE ─────────────── -->
+<section id="tab-live">
+  <div class="grid c2">
+    <div class="card">
+      <h3>Service topology</h3>
+      <div id="topology"><span class="hint">loading…</span></div>
+      <div class="hint">Requests flow top to bottom. Breaking a lower service cascades upward.</div>
+    </div>
+
+    <div class="card">
+      <h3>Break something</h3>
+      <div style="margin-bottom:10px">
+        <select id="chaos-svc">
+          <option>ledger-service</option>
+          <option>payment-service</option>
+          <option>checkout-service</option>
+        </select>
+        <select id="chaos-fault">
+          <option>pool_exhaustion</option>
+          <option>memory_leak</option>
+          <option>bad_deploy</option>
+          <option>latency_spike</option>
+          <option>error_burst</option>
+          <option>dependency_timeout</option>
+        </select>
+      </div>
+      <div class="btn-row">
+        <button class="act danger" id="btn-break">Inject fault</button>
+        <button class="act" id="btn-evidence">Investigate</button>
+        <button class="act good" id="btn-fix">Remediate</button>
+        <button class="act" id="btn-clear">Clear all</button>
+      </div>
+      <div class="hint">Remediate runs the real executor: idempotency key, dry-run, verify, rollback.</div>
+      <pre id="action-out" style="margin-top:12px">Ready.</pre>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:16px">
+    <h3>Investigation evidence</h3>
+    <div id="cascade-banner"></div>
+    <pre id="evidence-out">Click “Investigate” after injecting a fault.</pre>
+    <div class="hint">The dependency probe is what separates a root cause from a cascade victim.</div>
+  </div>
+</section>
+
+<!-- ─────────────── GROUNDHOG ─────────────── -->
+<section id="tab-groundhog" class="hidden">
+  <div class="grid c4">
+    <div class="card stat"><div class="v accent" id="gh-runs">—</div><div class="l">fault interleavings</div></div>
+    <div class="card stat"><div class="v" id="gh-sim">—</div><div class="l">simulated time</div></div>
+    <div class="card stat"><div class="v warn" id="gh-comp">—</div><div class="l">time compression</div></div>
+    <div class="card stat"><div class="v ok" id="gh-viol">—</div><div class="l">violations (after fixes)</div></div>
+  </div>
+
+  <div class="card" style="margin-top:16px">
+    <h3>Bugs found by simulation</h3>
+
+    <div class="bug fixed">
+      <h4>GH-001 <span class="badge fixed">fixed</span> <span class="badge">seed 3</span></h4>
+      <p><strong>Double execution when the verification probe is also lost.</strong>
+         The executor guards a lost ACK by probing the service. The probe has its own
+         failure mode — when the network dropped both, an empty health response failed
+         the guard and control fell through to retry.</p>
+      <p><em>Fix:</em> the probe returns a tristate and retries with backoff. An
+         unobservable state now fails <strong>closed</strong>. “Cannot observe” must never
+         collapse into “did not happen”.</p>
+      <p class="hint">181 occurrences in 15,000 runs (~1.2%)</p>
+    </div>
+
+    <div class="bug fixed">
+      <h4>GH-002 <span class="badge fixed">fixed</span> <span class="badge crit">critical</span> <span class="badge">seed 149</span></h4>
+      <p><strong>Client-side idempotency cannot protect an involution.</strong>
+         <code>rollback_version</code> applied twice returns to the starting version. A
+         network-duplicated request left the service back on the <em>bad</em> version —
+         indistinguishable, from the client, from never having run.</p>
+      <p><em>Fix:</em> the <strong>server</strong> honours <code>Idempotency-Key</code>.
+         Client-side keys are necessary but not sufficient; at-most-once requires server
+         participation. This is why Stripe and AWS put idempotency server-side.</p>
+      <p class="hint">95 occurrences in 100,000 runs (~0.1%)</p>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:16px">
+    <h3>Trace replay</h3>
+    <div class="btn-row" style="margin-bottom:10px">
+      <select id="tr-scenario"></select>
+      <input type="text" id="tr-seed" value="3" style="width:90px" inputmode="numeric">
+      <button class="act" id="btn-trace">Replay seed</button>
+    </div>
+    <div class="hint" style="margin-bottom:10px">
+      Traces are not stored — they are <strong>regenerated</strong> from the seed and are
+      byte-identical to the original run. That is the whole point of determinism.
+    </div>
+    <pre id="trace-out">Pick a seed and replay.</pre>
+  </div>
+</section>
+
+<!-- ─────────────── RETRIEVAL ─────────────── -->
+<section id="tab-retrieval" class="hidden">
+  <div class="card">
+    <h3>Hybrid retrieval — why dense alone is not enough</h3>
+    <div style="display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap">
+      <input type="text" id="q" value="exit code 137 container killed" style="flex:1; min-width:240px">
+      <button class="act" id="btn-search">Compare modes</button>
+    </div>
+    <div class="note" style="margin-bottom:14px">
+      Try <code>exit code 137 container killed</code>. Dense-only returns an unrelated
+      postmortem; BM25 and hybrid return the correct OOMKilled runbook. Embeddings cannot
+      represent rare literal tokens.
+    </div>
+    <div class="grid c3" id="search-out"></div>
+  </div>
+</section>
+
+<!-- ─────────────── NUMBERS ─────────────── -->
+<section id="tab-numbers" class="hidden">
+  <div class="grid c2">
+    <div class="card">
+      <h3>Ingestion — Kafka → Flink</h3>
+      <table id="load-table"><tbody><tr><td class="hint">loading…</td></tr></tbody></table>
+      <div class="hint">Saturation is where delivery stops tracking production.</div>
+    </div>
+    <div class="card">
+      <h3>Retrieval — 1,342 documents</h3>
+      <table id="rag-table"><tbody><tr><td class="hint">loading…</td></tr></tbody></table>
+      <div class="hint">Hybrid buys accuracy, not speed: embedding dominates at this corpus size.</div>
+    </div>
+  </div>
+  <div class="card" style="margin-top:16px">
+    <h3>Why conventional testing missed both bugs</h3>
+    <table>
+      <thead><tr><th></th><th>Integration suite</th><th>Groundhog</th></tr></thead>
+      <tbody>
+        <tr><td>Runs</td><td>200</td><td id="cmp-runs">—</td></tr>
+        <tr><td>Network faults</td><td>none</td><td>drop, delay, duplicate, ack-loss</td></tr>
+        <tr><td>Crash injection</td><td>none</td><td id="cmp-crash">—</td></tr>
+        <tr><td>Reproducibility</td><td>timing-dependent</td><td>exact, from a 64-bit seed</td></tr>
+        <tr><td>Wall clock</td><td>minutes</td><td id="cmp-wall">—</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<footer>
+  PagedOut · phi3:mini · Kafka · Flink · Qdrant · LangGraph · Groundhog
+  <span id="api-note"></span>
+</footer>
+
+</div>
+
+<script>
+const API = location.port === "8000" || location.port === "" ? "" : "http://localhost:8000";
+const $ = s => document.querySelector(s);
+const fmt = n => n == null ? "—" : n.toLocaleString();
+
+async function api(path, opts) {
+  const r = await fetch(API + path, opts);
+  if (!r.ok) throw new Error((await r.text()).slice(0, 200));
+  return r.json();
+}
+
+/* tabs */
+document.querySelectorAll("nav button").forEach(b => {
+  b.onclick = () => {
+    document.querySelectorAll("nav button").forEach(x =>
+      x.setAttribute("aria-selected", x === b));
+    document.querySelectorAll("section").forEach(s => s.classList.add("hidden"));
+    $("#tab-" + b.dataset.tab).classList.remove("hidden");
+  };
+});
+
+/* dependency chips */
+async function loadHealth() {
+  try {
+    const h = await api("/api/health");
+    $("#deps").innerHTML = Object.entries(h.dependencies)
+      .map(([k, v]) => `<span class="chip ${v}">${k}: ${v}</span>`).join("");
+  } catch (e) {
+    $("#deps").innerHTML = `<span class="chip down">API unreachable</span>`;
+    $("#api-note").textContent = " · start the API: uvicorn api.main:app --port 8000";
+  }
+}
+
+/* topology */
+async function loadTopology() {
+  try {
+    const svcs = await api("/api/services");
+    const order = ["checkout-service", "payment-service", "ledger-service"];
+    svcs.sort((a, b) => order.indexOf(a.service) - order.indexOf(b.service));
+    $("#topology").innerHTML = svcs.map((s, i) => {
+      const cls = !s.reachable ? "unk" : s.healthy ? "ok" : "bad";
+      const faults = s.active_faults?.length ? s.active_faults.join(", ") : "healthy";
+      return `<div class="svc">
+          <span class="dot ${cls}"></span>
+          <span class="name">${s.service}</span>
+          <span class="meta">${s.version ?? "?"} · pool ${
+            s.pool_utilization != null ? Math.round(s.pool_utilization * 100) + "%" : "?"
+          } · ${faults}</span>
+        </div>` + (i < svcs.length - 1 ? `<div class="arrow">↓</div>` : "");
+    }).join("");
+  } catch (e) {
+    $("#topology").innerHTML = `<span class="hint">services unreachable</span>`;
+  }
+}
+
+/* actions */
+$("#btn-break").onclick = async () => {
+  $("#action-out").textContent = "injecting…";
+  try {
+    const r = await api("/api/chaos", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ service: $("#chaos-svc").value, fault: $("#chaos-fault").value }),
+    });
+    $("#action-out").textContent = JSON.stringify(r, null, 2);
+    setTimeout(loadTopology, 1200);
+  } catch (e) { $("#action-out").textContent = "error: " + e.message; }
+};
+
+$("#btn-clear").onclick = async () => {
+  $("#action-out").textContent = "clearing…";
+  try {
+    $("#action-out").textContent = JSON.stringify(
+      await api("/api/chaos/clear", { method: "POST" }), null, 2);
+    $("#cascade-banner").innerHTML = "";
+    setTimeout(loadTopology, 1200);
+  } catch (e) { $("#action-out").textContent = "error: " + e.message; }
+};
+
+$("#btn-fix").onclick = async () => {
+  $("#action-out").textContent = "remediating…";
+  try {
+    const r = await api("/api/remediate", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ service: $("#chaos-svc").value }),
+    });
+    $("#action-out").textContent = JSON.stringify(r, null, 2);
+    setTimeout(loadTopology, 1200);
+  } catch (e) { $("#action-out").textContent = "error: " + e.message; }
+};
+
+$("#btn-evidence").onclick = async () => {
+  $("#evidence-out").textContent = "probing…";
+  try {
+    const r = await api(`/api/evidence/${$("#chaos-svc").value}`);
+    $("#cascade-banner").innerHTML = r.is_cascade_victim
+      ? `<div class="note" style="margin-bottom:12px">
+           <strong>${r.service} is a cascade victim.</strong> The real origin is
+           <code>${r.cascade_origin}</code>. Remediating ${r.service} would do nothing.
+         </div>` : "";
+    $("#evidence-out").textContent = r.evidence
+      .map(e => `${e.ok ? " " : "!"} [${e.tool}] ${e.summary}`).join("\n");
+  } catch (e) { $("#evidence-out").textContent = "error: " + e.message; }
+};
+
+/* groundhog */
+async function loadGroundhog() {
+  try {
+    const b = await api("/api/benchmarks");
+    const g = b.groundhog || {};
+    $("#gh-runs").textContent = fmt(g.runs);
+    $("#gh-sim").textContent = g.simulated_seconds
+      ? (g.simulated_seconds / 3600).toFixed(1) + " h" : "—";
+    $("#gh-comp").textContent = g.time_compression
+      ? Math.round(g.time_compression).toLocaleString() + "×" : "—";
+    $("#gh-viol").textContent = g.violations != null ? g.violations : "—";
+    $("#cmp-runs").textContent = fmt(g.runs);
+    $("#cmp-crash").textContent = fmt(g.crashes) + " crashes + recoveries";
+    $("#cmp-wall").textContent = g.wall_seconds ? g.wall_seconds + " s" : "—";
+
+    const l = b.ingestion || {};
+    if (l.steps) {
+      $("#load-table").innerHTML =
+        `<thead><tr><th>target/s</th><th class="num">delivered</th>
+          <th class="num">p99</th><th></th></tr></thead><tbody>` +
+        l.steps.map(s => `<tr>
+            <td>${fmt(s.target_rate)}</td>
+            <td class="num">${s.delivery_pct.toFixed(1)}%</td>
+            <td class="num">${Math.round(s.p99_ms)} ms</td>
+            <td>${s.generator_bound ? '<span class="badge">gen-bound</span>'
+                 : s.pipeline_kept_up ? '<span class="badge low">ok</span>'
+                 : '<span class="badge crit">saturated</span>'}</td>
+          </tr>`).join("") + "</tbody>";
+    }
+
+    const r = b.retrieval || {};
+    if (r.configs) {
+      $("#rag-table").innerHTML =
+        `<thead><tr><th>config</th><th class="num">recall@3</th>
+          <th class="num">MRR</th><th class="num">search p50</th></tr></thead><tbody>` +
+        r.configs.map(c => `<tr>
+            <td>${c.label.split("(")[0].trim()}</td>
+            <td class="num">${(c.recall_at_3 * 100).toFixed(1)}%</td>
+            <td class="num">${c.mrr.toFixed(3)}</td>
+            <td class="num">${c.search_p50_ms} ms</td>
+          </tr>`).join("") + "</tbody>";
+    }
+  } catch (e) { /* API down; panels keep their placeholders */ }
+}
+
+async function loadScenarios() {
+  try {
+    const sc = await api("/api/groundhog/scenarios");
+    $("#tr-scenario").innerHTML = sc.map(s =>
+      `<option value="${s.name}">${s.name}</option>`).join("");
+  } catch (e) { /* ignore */ }
+}
+
+$("#btn-trace").onclick = async () => {
+  $("#trace-out").textContent = "replaying…";
+  try {
+    const t = await api(`/api/groundhog/trace/${$("#tr-seed").value}` +
+                        `?scenario=${$("#tr-scenario").value}`);
+    const head =
+      `seed ${t.seed}   digest ${t.digest.slice(0, 16)}\n` +
+      `crashed=${t.crashed}  recovered=${t.recovered}  ` +
+      `side_effects=${t.side_effects}  violations=${t.violations.length}\n` +
+      "─".repeat(72) + "\n";
+    const body = t.events.map(e =>
+      `${e.at_s.toFixed(4).padStart(9)}s  ${e.kind.padEnd(12)} ` +
+      `${e.actor.padEnd(17)} ${e.detail}`).join("\n");
+    const viol = t.violations.length
+      ? "\n" + "─".repeat(72) + "\n" +
+        t.violations.map(v => `VIOLATION  ${v.invariant}: ${v.detail}`).join("\n")
+      : "";
+    $("#trace-out").textContent = head + body + viol;
+  } catch (e) { $("#trace-out").textContent = "error: " + e.message; }
+};
+
+/* retrieval */
+$("#btn-search").onclick = async () => {
+  const q = $("#q").value;
+  $("#search-out").innerHTML = `<span class="hint">searching…</span>`;
+  try {
+    const modes = ["dense", "sparse", "hybrid"];
+    const results = await Promise.all(
+      modes.map(m => api(`/api/retrieve?q=${encodeURIComponent(q)}&mode=${m}`)));
+    $("#search-out").innerHTML = results.map(r => `
+      <div class="card" style="background:var(--panel-2)">
+        <h3>${r.mode} · ${r.latency_ms} ms</h3>
+        ${r.hits.map((h, i) => `
+          <div class="kv">
+            <span class="k">${i + 1}. ${h.source}</span>
+            <span class="v2">${h.score.toFixed(3)}</span>
+          </div>
+          <div style="font-size:12px; margin:2px 0 8px; color:var(--fg)">${h.title}</div>
+        `).join("") || '<span class="hint">no hits</span>'}
+      </div>`).join("");
+  } catch (e) {
+    $("#search-out").innerHTML = `<span class="hint">error: ${e.message}</span>`;
+  }
+};
+
+loadHealth(); loadTopology(); loadGroundhog(); loadScenarios();
+setInterval(loadTopology, 6000);
+setInterval(loadHealth, 12000);
+</script>
+</body>
+</html>

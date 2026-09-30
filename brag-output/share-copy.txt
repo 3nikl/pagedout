@@ -1,0 +1,10 @@
+I built a system that repairs production infrastructure on its own — then built
+a simulator that replays 214 hours of failure in 6.6 seconds to prove it
+wouldn't make things worse.
+
+It found two bugs my test suite never could. One of them proves client-side
+idempotency keys cannot guarantee at-most-once execution — only the server can.
+
+Every failure reproduces exactly from a 64-bit seed.
+
+github.com/3nikl/pagedout

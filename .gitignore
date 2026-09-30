@@ -26,3 +26,10 @@ env/
 # Local model + embedding caches
 .cache/
 models/
+
+# brag: keep deliverables, drop the 630 intermediate frames
+brag-output/work/frames/
+brag-output/work/stills/
+brag-output/work/node_modules/
+brag-output/work/*.wav
+brag-output/work/poster.png

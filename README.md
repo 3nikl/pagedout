@@ -24,7 +24,7 @@ conventional test suite never would.
 
 | | |
 |---|---|
-| **Ingestion** | 32,000 events/sec sustained, p99 **68 ms**, 100% delivery; saturation located at 64K |
+| **Ingestion** | 48,000 events/sec sustained at 100% delivery, p99 **282 ms**; latency knee at 64K (p99 degrades 7x to 1.97s) |
 | **Correlation** | **63.5 : 1** signal-to-incident collapse, 30s event-time tumbling windows |
 | **Checkpointing** | 14 completed / 0 failed, 138 KB state, 89 ms, RocksDB |
 | **Retrieval** | Recall@3 **67.7% → 90.6%**, MRR 0.609 → 0.813, over 1,342 real documents |

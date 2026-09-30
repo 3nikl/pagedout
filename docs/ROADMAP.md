@@ -120,13 +120,19 @@ limits.
 
 **Measured**
 
-| target | produced | consumed | flink_out | delivery | p99 |
-|---|---|---|---|---|---|
-| 16,000 | 15,999 | 15,999 | 320,004 | 100% | 80 ms |
-| **32,000** | **31,986** | **31,986** | 639,720 | **100%** | **68 ms** |
-| 64,000 | 63,994 | 29,751 | — | 46.5% | 1,186 ms |
+| target | delivery | p50 | p99 | |
+|---|---|---|---|---|
+| 16,000 | 100% | 28 ms | 80 ms | clean |
+| 32,000 | 100% | 27 ms | 149 ms | clean |
+| **48,000** | **100%** | **23 ms** | **282 ms** | **sustained** |
+| 64,000 | 100% | 25 ms | 1,973 ms | latency knee |
 
-- Sustained **32,000 events/sec at p99 68ms**, saturating at 64K
+An earlier ramp with a shorter drain window reported 64K as saturated at 46%
+delivery. The longer drain showed the truth: throughput holds, but tail latency
+degrades sevenfold. The pipeline stops keeping up before it starts losing data.
+The later run is the one to quote.
+
+- Sustained **48,000 events/sec at 100% delivery, p99 282ms**; latency knee at 64K
 - Correlation: **63.5:1** signal-to-incident collapse
 - Checkpoints: 14 completed, 0 failed, 138 KB, 89 ms, RocksDB confirmed
 
@@ -354,7 +360,7 @@ simulation, and it is a genuine advantage on a memory-constrained laptop.
 
 | Phase | Claim it earns |
 |---|---|
-| 1 | 32K events/sec at 68ms p99; 63.5:1 correlation |
+| 1 | 48K events/sec at 282ms p99; 63.5:1 correlation |
 | 2 | 1,342 documents; Recall@3 67.7% → 90.6% |
 | 3 | severity classification and LLM planning over retrieved context |
 | 4 | 0 invalid executions, 0 duplicate actions across 200 runs |

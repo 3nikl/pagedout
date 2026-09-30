@@ -1,0 +1,448 @@
+<title>PagedOut</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Serif:wght@400;500;600&display=swap">
+<style>
+  :root {
+    color-scheme: light;
+    --paper:#f6f7f9; --raised:#ffffff; --sunken:#eceef2;
+    --ink:#14181f; --muted:#5c6675; --faint:#8b94a3;
+    --line:#dde1e8; --line-strong:#c6ccd7;
+    --accent:#2b4acb; --accent-soft:#e8ecfb;
+    --ok:#1f8a5f; --warn:#b5761f; --crit:#c2402f;
+    --ok-soft:#e4f3ec; --warn-soft:#fbf1e0; --crit-soft:#fbeae7;
+    --serif:"IBM Plex Serif",Georgia,serif;
+    --sans:"IBM Plex Sans",system-ui,-apple-system,sans-serif;
+    --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  }
+  :root:not([data-theme="light"]) { }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --paper:#0f1218; --raised:#161b23; --sunken:#0a0d12;
+      --ink:#e8ebf0; --muted:#98a2b3; --faint:#6b7585;
+      --line:#242b37; --line-strong:#333c4c;
+      --accent:#8ba3f7; --accent-soft:#1a2340;
+      --ok:#4cc38a; --warn:#e0a458; --crit:#f0796a;
+      --ok-soft:#12271e; --warn-soft:#2a2013; --crit-soft:#2c1715;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --paper:#0f1218; --raised:#161b23; --sunken:#0a0d12;
+    --ink:#e8ebf0; --muted:#98a2b3; --faint:#6b7585;
+    --line:#242b37; --line-strong:#333c4c;
+    --accent:#8ba3f7; --accent-soft:#1a2340;
+    --ok:#4cc38a; --warn:#e0a458; --crit:#f0796a;
+    --ok-soft:#12271e; --warn-soft:#2a2013; --crit-soft:#2c1715;
+  }
+
+  * { box-sizing:border-box; }
+  body {
+    margin:0; background:var(--paper); color:var(--ink);
+    font-family:var(--sans); font-size:16px; line-height:1.6;
+    -webkit-font-smoothing:antialiased;
+  }
+  .page { max-width:880px; margin:0 auto; padding-block:0 72px; padding-left:20px; padding-right:20px; }
+  .wide { max-width:1040px; }
+
+  a { color:var(--accent); text-decoration:none; border-bottom:1px solid transparent; }
+  a:hover { border-bottom-color:currentColor; }
+  a:focus-visible, button:focus-visible { outline:2px solid var(--accent); outline-offset:3px; border-radius:3px; }
+
+  /* ── masthead ── */
+  .masthead { padding-block:56px 40px; border-bottom:2px solid var(--ink); }
+  .eyebrow {
+    font-family:var(--mono); font-size:11px; letter-spacing:.16em;
+    text-transform:uppercase; color:var(--muted); margin-bottom:18px;
+  }
+  h1 {
+    font-family:var(--serif); font-weight:600; font-size:clamp(38px,7vw,60px);
+    line-height:1.02; letter-spacing:-.025em; margin:0 0 20px; text-wrap:balance;
+  }
+  .thesis {
+    font-family:var(--serif); font-size:clamp(18px,2.6vw,22px); line-height:1.5;
+    color:var(--ink); max-width:38em; margin:0 0 28px; text-wrap:balance;
+  }
+  .byline {
+    display:flex; gap:20px; flex-wrap:wrap; align-items:baseline;
+    font-family:var(--mono); font-size:12.5px; color:var(--muted);
+  }
+
+  /* ── headline metric ── */
+  .headline {
+    margin-block:40px; padding:30px 28px; background:var(--raised);
+    border:1px solid var(--line); border-left:4px solid var(--accent);
+  }
+  .headline .big {
+    font-family:var(--mono); font-weight:600; font-size:clamp(34px,6.5vw,52px);
+    line-height:1; letter-spacing:-.03em; color:var(--accent);
+    font-variant-numeric:tabular-nums;
+  }
+  .headline .cap {
+    font-size:16px; color:var(--ink); margin-top:14px; max-width:44em;
+  }
+  .headline .sub { font-size:14px; color:var(--muted); margin-top:8px; }
+
+  /* ── sections ── */
+  section { padding-block:46px; border-top:1px solid var(--line); }
+  h2 {
+    font-family:var(--serif); font-weight:600; font-size:29px;
+    letter-spacing:-.018em; margin:0 0 6px; text-wrap:balance;
+  }
+  .deck { color:var(--muted); font-size:15.5px; margin:0 0 26px; max-width:40em; }
+  h3 {
+    font-family:var(--mono); font-size:12px; font-weight:600; letter-spacing:.11em;
+    text-transform:uppercase; color:var(--muted); margin:0 0 14px;
+  }
+  p { max-width:40em; }
+
+  /* ── trace ── */
+  .trace {
+    background:var(--sunken); border:1px solid var(--line);
+    font-family:var(--mono); font-size:12.5px; overflow-x:auto;
+  }
+  .trace-head {
+    display:flex; justify-content:space-between; gap:14px; flex-wrap:wrap;
+    padding:12px 16px; border-bottom:1px solid var(--line);
+    background:var(--raised); font-size:11.5px; letter-spacing:.05em;
+    text-transform:uppercase; color:var(--muted);
+  }
+  .trace-head .verdict { font-weight:600; letter-spacing:.03em; }
+  .verdict.bad { color:var(--crit); } .verdict.good { color:var(--ok); }
+  .row {
+    display:grid; grid-template-columns:82px 104px 1fr; gap:14px;
+    padding:7px 16px; align-items:baseline; white-space:nowrap;
+  }
+  .row + .row { border-top:1px solid color-mix(in srgb, var(--line) 55%, transparent); }
+  .row .t { color:var(--faint); font-variant-numeric:tabular-nums; text-align:right; }
+  .row .k { font-size:10.5px; letter-spacing:.07em; text-transform:uppercase; color:var(--muted); }
+  .row .d { color:var(--ink); }
+  .row.fault { background:var(--crit-soft); }
+  .row.fault .k, .row.fault .d { color:var(--crit); }
+  .row.effect { background:var(--warn-soft); }
+  .row.effect .k, .row.effect .d { color:var(--warn); font-weight:500; }
+  .row.resolved { background:var(--ok-soft); }
+  .row.resolved .k, .row.resolved .d { color:var(--ok); font-weight:500; }
+  .annot {
+    padding:10px 16px; border-top:1px solid var(--line); background:var(--raised);
+    font-family:var(--sans); font-size:13.5px; color:var(--muted);
+  }
+  .annot strong { color:var(--ink); font-weight:600; }
+
+  .pair { display:grid; gap:18px; grid-template-columns:1fr; }
+  @media (min-width:840px) { .pair { grid-template-columns:1fr 1fr; } }
+
+  /* ── stats ── */
+  .stats { display:grid; gap:1px; background:var(--line); border:1px solid var(--line);
+           grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); }
+  .stat { background:var(--raised); padding:18px 16px; }
+  .stat .v {
+    font-family:var(--mono); font-weight:600; font-size:25px; letter-spacing:-.02em;
+    font-variant-numeric:tabular-nums; line-height:1.15;
+  }
+  .stat .l { font-size:12.5px; color:var(--muted); margin-top:5px; }
+  .v.ok { color:var(--ok); } .v.accent { color:var(--accent); } .v.warn { color:var(--warn); }
+
+  /* ── tables ── */
+  .scroller { overflow-x:auto; border:1px solid var(--line); background:var(--raised); }
+  table { width:100%; border-collapse:collapse; font-size:14px; min-width:460px; }
+  caption { text-align:left; padding:13px 16px; border-bottom:1px solid var(--line);
+            font-family:var(--mono); font-size:11.5px; letter-spacing:.09em;
+            text-transform:uppercase; color:var(--muted); }
+  th { text-align:left; font-weight:600; font-size:12px; color:var(--muted);
+       padding:10px 16px; border-bottom:1px solid var(--line-strong); }
+  td { padding:10px 16px; border-bottom:1px solid var(--line);
+       font-family:var(--mono); font-variant-numeric:tabular-nums; }
+  tr:last-child td { border-bottom:none; }
+  td.r, th.r { text-align:right; }
+  tr.hi td { background:var(--accent-soft); font-weight:500; }
+  .tag { font-family:var(--mono); font-size:10.5px; letter-spacing:.05em;
+         padding:2px 7px; border:1px solid currentColor; }
+  .tag.ok { color:var(--ok); } .tag.warn { color:var(--warn); } .tag.crit { color:var(--crit); }
+
+  /* ── flow ── */
+  .flow { font-family:var(--mono); font-size:12.5px; line-height:1.75;
+          background:var(--sunken); border:1px solid var(--line);
+          padding:18px 16px; overflow-x:auto; color:var(--muted); }
+  .flow b { color:var(--ink); font-weight:600; }
+  .flow .em { color:var(--accent); }
+
+  /* ── use cases ── */
+  .uses { display:grid; gap:1px; background:var(--line); border:1px solid var(--line); }
+  .use { background:var(--raised); padding:20px 18px; }
+  .use h4 { margin:0 0 7px; font-size:16px; font-family:var(--serif); font-weight:600; }
+  .use p { margin:0; font-size:14.5px; color:var(--muted); max-width:none; }
+  .use .who { font-family:var(--mono); font-size:11px; letter-spacing:.09em;
+              text-transform:uppercase; color:var(--accent); margin-bottom:9px; }
+
+  .note { border-left:3px solid var(--line-strong); padding:2px 0 2px 16px;
+          color:var(--muted); font-size:14.5px; max-width:40em; }
+
+  footer { border-top:2px solid var(--ink); padding-block:28px 0; margin-top:46px;
+           font-size:14px; color:var(--muted); }
+  .links { display:flex; gap:22px; flex-wrap:wrap; margin-bottom:14px;
+           font-family:var(--mono); font-size:13.5px; }
+  @media (prefers-reduced-motion:reduce) { * { animation:none!important; transition:none!important; } }
+</style>
+
+<div class="page">
+
+  <header class="masthead">
+    <div class="eyebrow">Systems engineering · 2026</div>
+    <h1>PagedOut</h1>
+    <p class="thesis">
+      A system that repairs production infrastructure on its own — and the deterministic
+      simulator built to prove it won't make things worse.
+    </p>
+    <div class="byline">
+      <span>Nikhil Gade</span>
+      <span>Python · Kafka · Flink · Qdrant · LangGraph</span>
+    </div>
+  </header>
+
+  <div class="headline">
+    <div class="big">214 hours in 6.6 seconds</div>
+    <p class="cap">
+      Nine days of servers crashing, packets dropping and acknowledgements vanishing,
+      replayed in less time than it takes to read this paragraph.
+    </p>
+    <p class="sub">
+      600,000 fault interleavings · 23,199 injected crashes · 116,991× time compression ·
+      every failure reproducible from a 64-bit seed
+    </p>
+  </div>
+
+  <section>
+    <h2>The problem</h2>
+    <p class="deck">Automated remediation is dangerous in a way that testing usually misses.</p>
+    <p>
+      PagedOut watches a set of microservices, works out what broke, and fixes it: drains a
+      connection pool, clears a cache, rolls back a bad deploy. These are destructive actions
+      against live infrastructure.
+    </p>
+    <p>
+      The failure people expect is that the system picks the wrong fix. The failures that
+      actually hurt are subtler:
+    </p>
+    <ul>
+      <li>An acknowledgement is lost, the client retries, and the service <strong>restarts twice</strong>.</li>
+      <li>A process crashes, recovers from its checkpoint, and <strong>replays an action that already ran</strong>.</li>
+      <li>A rollback fires while a repair is still in flight and the two <strong>interleave</strong>.</li>
+    </ul>
+    <p>
+      Each of these needs one specific ordering out of millions. A test suite that runs two
+      hundred times will never produce it. It will pass, and the bug ships.
+    </p>
+  </section>
+
+  <section>
+    <h2>The trace</h2>
+    <p class="deck">
+      Seed 3. A bug the integration suite could not have found, and the same seed after the fix.
+    </p>
+
+    <div class="pair">
+      <div>
+        <h3>Before — GH-001</h3>
+        <div class="trace">
+          <div class="trace-head">
+            <span>seed 3 · pool_exhaustion</span>
+            <span class="verdict bad">2 side effects</span>
+          </div>
+          <div class="row effect"><span class="t">0.0020s</span><span class="k">effect</span><span class="d">/admin/pool/drain — applied</span></div>
+          <div class="row fault"><span class="t">0.0020s</span><span class="k">fault</span><span class="d">ack dropped</span></div>
+          <div class="row fault"><span class="t">5.0020s</span><span class="k">fault</span><span class="d">verify probe dropped</span></div>
+          <div class="row effect"><span class="t">8.5357s</span><span class="k">effect</span><span class="d">/admin/pool/drain — applied again</span></div>
+          <div class="annot">
+            <strong>The defence had its own failure mode.</strong> The executor probes the service
+            to check whether a lost action landed. When that probe also failed, an empty response
+            was read as “it never happened”, and the action ran twice.
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <h3>After the fix</h3>
+        <div class="trace">
+          <div class="trace-head">
+            <span>seed 3 · pool_exhaustion</span>
+            <span class="verdict good">1 side effect</span>
+          </div>
+          <div class="row effect"><span class="t">0.0020s</span><span class="k">effect</span><span class="d">/admin/pool/drain — applied</span></div>
+          <div class="row fault"><span class="t">0.0020s</span><span class="k">fault</span><span class="d">ack dropped</span></div>
+          <div class="row fault"><span class="t">5.0020s</span><span class="k">fault</span><span class="d">verify probe dropped</span></div>
+          <div class="row resolved"><span class="t">8.5377s</span><span class="k">halt</span><span class="d">unobservable — failing closed</span></div>
+          <div class="annot">
+            <strong>Cannot observe is not the same as did not happen.</strong> The probe now retries,
+            and an unresolvable state stops and escalates instead of retrying the action.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <p class="note" style="margin-top:22px">
+      Both traces are regenerated from the seed on demand, not stored. Two runs of seed 3
+      produce byte-identical output on any machine — which is what turns a one-off failure
+      into a permanent regression test.
+    </p>
+  </section>
+
+  <section>
+    <h2>The second bug</h2>
+    <p class="deck">Seed 149. The one worth understanding.</p>
+    <p>
+      Rolling back a deployment is <em>self-inverse</em>: do it twice and you are back where you
+      started. When the network duplicated a rollback request, the service landed on the bad
+      version again — and from the client's side that is indistinguishable from the action
+      never having run. So it retried.
+    </p>
+    <p>
+      Fixing the verification logic was not enough; 95 violations survived. The real conclusion
+      was structural:
+    </p>
+    <div class="headline" style="border-left-color:var(--crit); margin-block:26px">
+      <p class="cap" style="margin:0; font-family:var(--serif); font-size:18px">
+        Client-side idempotency keys cannot guarantee at-most-once execution.
+        Once the network can duplicate a request, only the server can.
+      </p>
+    </div>
+    <p>
+      This is why Stripe and AWS implement <code>Idempotency-Key</code> on the server rather than
+      trusting clients to retry carefully. The simulator found it in six seconds; it would have
+      reached production otherwise.
+    </p>
+  </section>
+
+  <section>
+    <h2>Measured</h2>
+    <p class="deck">Every figure on this page was measured on an 8&nbsp;GB MacBook. Nothing is projected.</p>
+
+    <div class="stats" style="margin-bottom:26px">
+      <div class="stat"><div class="v accent">600,000</div><div class="l">fault interleavings</div></div>
+      <div class="stat"><div class="v">116,991×</div><div class="l">time compression</div></div>
+      <div class="stat"><div class="v warn">2</div><div class="l">safety bugs found</div></div>
+      <div class="stat"><div class="v ok">0</div><div class="l">violations after fixes</div></div>
+    </div>
+
+    <div class="scroller" style="margin-bottom:22px">
+      <table>
+        <caption>Ingestion — Kafka → Flink, end to end</caption>
+        <thead><tr><th>Target rate</th><th class="r">Delivered</th><th class="r">p50</th><th class="r">p99</th><th></th></tr></thead>
+        <tbody>
+          <tr><td>16,000/s</td><td class="r">100%</td><td class="r">28 ms</td><td class="r">80 ms</td><td><span class="tag ok">clean</span></td></tr>
+          <tr><td>32,000/s</td><td class="r">100%</td><td class="r">27 ms</td><td class="r">149 ms</td><td><span class="tag ok">clean</span></td></tr>
+          <tr class="hi"><td>48,000/s</td><td class="r">100%</td><td class="r">23 ms</td><td class="r">282 ms</td><td><span class="tag ok">sustained</span></td></tr>
+          <tr><td>64,000/s</td><td class="r">100%</td><td class="r">25 ms</td><td class="r">1,973 ms</td><td><span class="tag warn">latency knee</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note" style="margin-bottom:26px">
+      Throughput holds at 64,000/s but tail latency degrades sevenfold. The pipeline stops
+      keeping up before it starts losing data — worth knowing, and only visible because the
+      ramp was pushed past the comfortable range.
+    </p>
+
+    <div class="scroller">
+      <table>
+        <caption>Retrieval — 1,342 documents, 96 queries × 6 repeats</caption>
+        <thead><tr><th>Configuration</th><th class="r">Recall@3</th><th class="r">MRR</th><th class="r">Search p50</th></tr></thead>
+        <tbody>
+          <tr><td>Exact scan (baseline)</td><td class="r">67.7%</td><td class="r">0.609</td><td class="r">3.67 ms</td></tr>
+          <tr><td>HNSW, dense only</td><td class="r">67.7%</td><td class="r">0.609</td><td class="r">3.57 ms</td></tr>
+          <tr class="hi"><td>Hybrid — dense + BM25, RRF</td><td class="r">90.6%</td><td class="r">0.813</td><td class="r">5.14 ms</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note" style="margin-top:14px">
+      Hybrid retrieval bought accuracy, not speed. At this corpus size the embedding pass
+      dominates and exact scan is already fast. The query <code>exit code 137 container
+      killed</code> shows why: dense search returns an unrelated postmortem, because embeddings
+      cannot represent rare literal tokens. BM25 finds it immediately.
+    </p>
+  </section>
+
+  <section>
+    <h2>How it works</h2>
+    <p class="deck">Three layers. The third is the one that matters.</p>
+    <div class="flow">
+<b>1 · INGEST</b>
+   checkout-service → payment-service → ledger-service
+   logs · metrics · alerts  ──►  Kafka  ──►  <b>Apache Flink</b>
+   30-second event-time windows on RocksDB state
+   <span class="em">63 signals collapse into 1 incident</span>
+
+<b>2 · DECIDE</b>
+   triage → investigate → retrieve runbook → plan → remediate
+   live Prometheus · hybrid RAG over 1,342 documents
+   every plan <span class="em">schema-validated</span> against a closed action registry
+
+<b>3 · PROVE</b>  <span class="em">← Groundhog</span>
+   virtual clock · seeded randomness · lossy network · crash injection
+   5 safety invariants checked against ground truth
+   <span class="em">run(seed) → byte-identical trace, every time</span>
+    </div>
+    <p class="note" style="margin-top:18px">
+      The executor imports no clock, no random number generator and no HTTP client. Everything
+      arrives through injectable ports. If even one source of nondeterminism were left
+      hardcoded, no failing seed would reproduce and the simulator would be worthless.
+    </p>
+  </section>
+
+  <section>
+    <h2>Where this applies</h2>
+    <p class="deck">
+      PagedOut is a portfolio system, not a product. The technique underneath it is not.
+    </p>
+    <div class="uses">
+      <div class="use">
+        <div class="who">Platform and SRE teams</div>
+        <h4>Auto-remediation you can actually turn on</h4>
+        <p>
+          Most teams write runbook automation and then leave it in dry-run forever, because
+          nobody can prove it won't double-execute during a partial outage. Simulating the
+          execution path against injected faults is how that gets approved for production.
+        </p>
+      </div>
+      <div class="use">
+        <div class="who">Teams shipping AI agents</div>
+        <h4>Safety for agents that take real actions</h4>
+        <p>
+          An agent that calls APIs, moves money or changes infrastructure has the same
+          at-most-once problem, and almost none of them test for it. Recording the model's
+          decisions once and replaying them deterministically tests the execution machinery
+          without re-rolling the dice on the model.
+        </p>
+      </div>
+      <div class="use">
+        <div class="who">Anyone building distributed systems</div>
+        <h4>Bugs that survive normal testing</h4>
+        <p>
+          Retry storms, replay after recovery, and duplicate delivery need exact orderings.
+          Deterministic simulation is how FoundationDB and TigerBeetle find them, and it runs
+          on a laptop with no cluster and no dependencies.
+        </p>
+      </div>
+      <div class="use">
+        <div class="who">Engineering leaders</div>
+        <h4>A regression test that cannot flake</h4>
+        <p>
+          Every bug found becomes a seed. It reruns in milliseconds, needs no infrastructure,
+          and reproduces the exact interleaving forever. Timing-based chaos testing cannot
+          offer that, which is why teams end up ignoring it.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <div class="links">
+      <a href="https://github.com/3nikl/pagedout">github.com/3nikl/pagedout</a>
+      <a href="https://linkedin.com/in/nikhil--gade">LinkedIn</a>
+    </div>
+    <p style="margin:0; max-width:40em">
+      Source, benchmarks and both bug write-ups are in the repository. The simulator has no
+      third-party dependencies: <code>python groundhog/explore.py</code> reproduces the
+      600,000-run sweep on any machine with Python 3.11.
+    </p>
+  </footer>
+
+</div>

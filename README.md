@@ -20,6 +20,19 @@ conventional test suite never would.
 
 ---
 
+## Watch it
+
+![PagedOut — seed 3, an automated repair executing twice](brag-output/hook.gif)
+
+Above: the opening of the launch video. Seed 3, replayed — an automated pool
+drain runs, the acknowledgement is lost, the verification probe is lost too,
+and the repair executes a second time. That is bug **GH-001**, reproduced
+exactly from a 64-bit seed.
+
+**▶ [Full 21-second video](brag-output/brag.mp4)** · [how it was made](brag-output/brag-plan.md)
+
+---
+
 ## Results
 
 | | |
@@ -217,7 +230,13 @@ its own action is dangerous puts that judgement in the worst possible place.
   That is the next invariant worth testing.
 - **A live cloud deployment.** The Kubernetes manifests validate with
   `kubectl kustomize` but have not been applied to a real cluster.
-- **Demo video.**
+- **A walkthrough demo.** The launch video above is a motion-graphics piece,
+  not a screen recording of the system running. A real walkthrough — inject a
+  fault, watch the cascade banner name the origin, remediate — is still to do.
+- **Validation against real production telemetry.** The retrieval corpus is
+  98% real (129 public postmortems from 79 organisations), but the telemetry
+  and the services are synthetic. Benchmarking triage accuracy against a
+  public labelled dataset is the obvious next step.
 
 ---
 

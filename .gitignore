@@ -33,3 +33,6 @@ brag-output/work/stills/
 brag-output/work/node_modules/
 brag-output/work/*.wav
 brag-output/work/poster.png
+
+# RCAEval telemetry (64MB, re-downloadable from HuggingFace)
+rcaeval/data/

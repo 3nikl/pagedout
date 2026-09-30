@@ -43,6 +43,7 @@ exactly from a 64-bit seed.
 | **Retrieval** | Recall@3 **67.7% → 90.6%**, MRR 0.609 → 0.813, over 1,342 real documents |
 | **Simulation** | **600,000** fault interleavings · 214.5 simulated hours · **117,000× compression** · 6.6 s wall clock |
 | **Bugs found** | **2**, both fixed, both pinned as regression seeds — **0 found by the 200-run integration suite** |
+| **Public benchmark** | **91.1% AC@1** on RCAEval (248 cases) vs 81.0% for BARO on identical inputs — [details](docs/BENCHMARK.md) |
 
 ---
 
@@ -233,10 +234,14 @@ its own action is dangerous puts that judgement in the worst possible place.
 - **A walkthrough demo.** The launch video above is a motion-graphics piece,
   not a screen recording of the system running. A real walkthrough — inject a
   fault, watch the cascade banner name the origin, remediate — is still to do.
-- **Validation against real production telemetry.** The retrieval corpus is
-  98% real (129 public postmortems from 79 organisations), but the telemetry
-  and the services are synthetic. Benchmarking triage accuracy against a
-  public labelled dataset is the obvious next step.
+- **The harder RCAEval suites.** [docs/BENCHMARK.md](docs/BENCHMARK.md)
+  covers RE1 only — 2 of 9 datasets. Train Ticket (40+ services) and the
+  multi-source RE2/RE3 suites are not run, and all three rankers should be
+  expected to fall there.
+- **Live production telemetry.** The retrieval corpus is 98% real (129 public
+  postmortems from 79 organisations) and the RCAEval evaluation uses somebody
+  else's data, but PagedOut's own services and generated telemetry are
+  synthetic.
 
 ---
 

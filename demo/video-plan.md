@@ -1,4 +1,4 @@
-# /brag plan — PagedOut
+# Demo video plan — PagedOut
 
 ## Angle
 

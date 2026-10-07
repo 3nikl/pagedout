@@ -22,14 +22,14 @@ conventional test suite never would.
 
 ## Watch it
 
-![PagedOut — seed 3, an automated repair executing twice](brag-output/hook.gif)
+![PagedOut — seed 3, an automated repair executing twice](demo/hook.gif)
 
 Above: the opening of the launch video. Seed 3, replayed — an automated pool
 drain runs, the acknowledgement is lost, the verification probe is lost too,
 and the repair executes a second time. That is bug **GH-001**, reproduced
 exactly from a 64-bit seed.
 
-**▶ [Full 21-second video](brag-output/brag.mp4)** · [how it was made](brag-output/brag-plan.md)
+**▶ [Full 21-second video](demo/demo.mp4)** · [how it was made](demo/video-plan.md)
 
 ---
 
